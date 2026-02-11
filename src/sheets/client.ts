@@ -82,6 +82,32 @@ export async function listClients(
   return summaries;
 }
 
+/**
+ * Highlight one or more cells green in the Google Sheet.
+ * Uses highlightRange action for efficiency (single API call for multiple cols).
+ * `cols` can be a single column letter or an array of column letters.
+ */
+export async function highlightCells(
+  sheetUrl: string,
+  row: number,
+  cols: string | string[],
+  color: string = "#4CAF50"
+): Promise<void> {
+  const colArray = Array.isArray(cols) ? cols : [cols];
+  try {
+    const url = new URL(sheetUrl);
+    url.searchParams.set("action", "highlightRange");
+    url.searchParams.set("row", row.toString());
+    url.searchParams.set("cols", colArray.join(","));
+    url.searchParams.set("color", color);
+    await fetch(url.toString(), { redirect: "follow" });
+    log("info", `✅ Highlighted ${colArray.join(",")} on row ${row} → ${color}`);
+  } catch (err) {
+    // Non-critical - don't break the flow
+    log("info", `⚠️ Highlight row ${row} failed (non-critical): ${err}`);
+  }
+}
+
 export async function updateCell(
   sheetUrl: string,
   row: number,

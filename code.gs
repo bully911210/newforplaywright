@@ -44,6 +44,28 @@ function doGet(e) {
       .setMimeType(ContentService.MimeType.JSON);
   }
 
+  if (action === "highlightCell") {
+    var row = parseInt(e.parameter.row);
+    var col = e.parameter.col;
+    var color = e.parameter.color || "#4CAF50";
+    var colIndex = col.charCodeAt(0) - 64;
+    sheet.getRange(row, colIndex).setBackground(color);
+    return ContentService.createTextOutput(JSON.stringify({ success: true, message: "Cell " + col + row + " highlighted " + color }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
+  if (action === "highlightRange") {
+    var row = parseInt(e.parameter.row);
+    var cols = e.parameter.cols.split(",");
+    var color = e.parameter.color || "#4CAF50";
+    for (var i = 0; i < cols.length; i++) {
+      var colIndex = cols[i].trim().charCodeAt(0) - 64;
+      sheet.getRange(row, colIndex).setBackground(color);
+    }
+    return ContentService.createTextOutput(JSON.stringify({ success: true, message: "Row " + row + " cols " + cols.join(",") + " highlighted " + color }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   return ContentService.createTextOutput(JSON.stringify({ error: "Unknown action" }))
     .setMimeType(ContentService.MimeType.JSON);
 }
