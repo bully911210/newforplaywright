@@ -9,7 +9,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node build/index.js"
+    "start": "node build/index.js",
+    "poll": "node build/standalone.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
