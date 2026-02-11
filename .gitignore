@@ -1,0 +1,11 @@
+node_modules/
+build/
+user-data/
+user-data-2/
+user-data-3/
+.env
+*.log
+*.png
+nul
+.claude/
+.mcp.json
