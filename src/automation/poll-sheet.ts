@@ -8,8 +8,9 @@ let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let processing = false;
 
 /**
- * Start polling the Google Sheet for new unprocessed rows.
- * Rows with an empty or blank status column (A) are considered "new".
+ * Start polling the Google Sheet for rows ready to process.
+ * Only rows with status "New" in column A are picked up.
+ * (The external workflow sets status to "New" once all fields are filled.)
  * Processes one row at a time, sequentially.
  */
 export function startPolling(intervalMs?: number): { success: boolean; message: string } {
@@ -76,10 +77,11 @@ async function pollOnce() {
     // Single API call to fetch all rows (includes status)
     const clients = await listClients(sheetUrl, config.columnMapping);
 
-    // Find rows where status is empty or "New"
+    // Only process rows where status is explicitly "New"
+    // (set by the external workflow when all fields are populated and ready)
     const unprocessedRows = clients.filter((c) => {
       const status = (c.status || "").trim().toLowerCase();
-      return status === "" || status === "new";
+      return status === "new";
     });
 
     if (unprocessedRows.length === 0) {
