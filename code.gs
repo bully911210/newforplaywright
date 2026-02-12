@@ -6,12 +6,14 @@ function doGet(e) {
   if (action === "getRow") {
     var row = parseInt(e.parameter.row);
     var lastCol = sheet.getLastColumn();
-    var rowData = sheet.getRange(row, 1, 1, lastCol).getValues()[0];
-    var tz = ss.getSpreadsheetTimeZone();
+    // Use getDisplayValues() to get the text EXACTLY as shown in the sheet.
+    // This preserves DD/MM/YYYY format from the South African locale
+    // and avoids JavaScript Date object locale conversion issues.
+    var displayData = sheet.getRange(row, 1, 1, lastCol).getDisplayValues()[0];
     var data = {};
     for (var i = 0; i < lastCol; i++) {
       var colLetter = String.fromCharCode(65 + i);
-      data[colLetter] = formatCellValue(rowData[i], tz);
+      data[colLetter] = displayData[i] || "";
     }
     return ContentService.createTextOutput(JSON.stringify({ row: row, data: data }))
       .setMimeType(ContentService.MimeType.JSON);
@@ -21,14 +23,14 @@ function doGet(e) {
     var start = parseInt(e.parameter.start) || 2;
     var end = e.parameter.end ? parseInt(e.parameter.end) : sheet.getLastRow();
     var lastCol = sheet.getLastColumn();
-    var tz2 = ss.getSpreadsheetTimeZone();
     var rows = [];
     for (var r = start; r <= end; r++) {
-      var rowData = sheet.getRange(r, 1, 1, lastCol).getValues()[0];
+      // Use getDisplayValues() to preserve the sheet's DD/MM/YYYY format exactly.
+      var displayData = sheet.getRange(r, 1, 1, lastCol).getDisplayValues()[0];
       var data = {};
       for (var i = 0; i < lastCol; i++) {
         var colLetter = String.fromCharCode(65 + i);
-        data[colLetter] = formatCellValue(rowData[i], tz2);
+        data[colLetter] = displayData[i] || "";
       }
       rows.push({ row: r, data: data });
     }

@@ -56,6 +56,13 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     const row = await fetchClientRow(sheetUrl, rowNumber, config.columnMapping);
     const d = row.mappedData;
 
+    // Only process rows with status "New" (case-insensitive)
+    const rowStatus = (d.status || "").trim().toLowerCase();
+    if (rowStatus !== "new") {
+      log("info", `[Row ${rowNumber}] Skipping - status is "${d.status}" (must be "New")`);
+      return { success: false, message: `Row status is "${d.status}", expected "New"` };
+    }
+
     // Validate required fields
     if (!d.clientName && !d.clientSurname) {
       log("info", `[Row ${rowNumber}] Skipping - no client name or surname`);
@@ -74,10 +81,17 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     await updateCell(sheetUrl, rowNumber, "A", "Processing...");
     await hlYellow("A");
 
-    // Format dates from sheet (both come as full JS date strings like "Sat Jan 03 2026 00:00:00 GMT+0200")
+    // Format dates from sheet.
+    // The Google Sheet API may return dates in two formats:
+    //   1. DD/MM/YYYY (if Apps Script formatCellValue is working)
+    //   2. JS Date string "Mon Nov 02 2026 00:00:00 GMT+0200" (if cell is a Date object)
+    // formatDate() handles both correctly.
     const inceptionDate = formatDate(d.dateSaleMade);
     const debitOrderDate = formatDate(d.debitOrderDate);           // e.g. "03/01/2026"
     const collectionDay = debitOrderDate.split("/")[0] || "01";    // e.g. "03"
+
+    log("info", `[Row ${rowNumber}] RAW dateSaleMade="${d.dateSaleMade}" → inceptionDate="${inceptionDate}"`);
+    log("info", `[Row ${rowNumber}] RAW debitOrderDate="${d.debitOrderDate}" → debitOrderDate="${debitOrderDate}" → collectionDay="${collectionDay}"`);
 
     // 2. Login
     step = "login";
@@ -216,18 +230,42 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
   }
 }
 
-/** Convert various date formats to DD/MM/YYYY. Falls back to today's date. */
+/**
+ * Convert various date formats to DD/MM/YYYY. Falls back to today's date.
+ *
+ * Handles:
+ *   - DD/MM/YYYY (from getDisplayValues - pass through as-is)
+ *   - YYYY/MM/DD or YYYY-MM-DD (ISO-like)
+ *   - JS Date strings like "Mon Nov 02 2026 00:00:00 GMT+0200"
+ *   - Empty/undefined (returns today's date)
+ */
 function formatDate(dateStr?: string): string {
   if (!dateStr) {
     const now = new Date();
     return `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()}`;
   }
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(dateStr)) return dateStr;
-  const parsed = new Date(dateStr);
+
+  const trimmed = dateStr.trim();
+
+  // Already DD/MM/YYYY — pass through directly (this is the expected format from getDisplayValues)
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) return trimmed;
+
+  // YYYY-MM-DD or YYYY/MM/DD format → convert to DD/MM/YYYY
+  const isoMatch = trimmed.match(/^(\d{4})[-\/](\d{2})[-\/](\d{2})/);
+  if (isoMatch) {
+    return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
+  }
+
+  // JS Date string (e.g. "Mon Nov 02 2026 00:00:00 GMT+0200")
+  // Parse with new Date() — this interprets English month names correctly
+  const parsed = new Date(trimmed);
   if (!isNaN(parsed.getTime())) {
     return `${pad(parsed.getDate())}/${pad(parsed.getMonth() + 1)}/${parsed.getFullYear()}`;
   }
-  return dateStr;
+
+  // Fallback: return as-is and log a warning
+  log("warn", `formatDate: could not parse "${dateStr}", returning as-is`);
+  return trimmed;
 }
 
 function pad(n: number): string {
