@@ -8,7 +8,7 @@ import { fillPolicyInfo } from "./policy-info.js";
 import { fillBankDetails } from "./bank-details.js";
 import { fileClientTab, filePolicyTab } from "./file-tab.js";
 import { fillCoverTab } from "./cover-tab.js";
-import { getPage } from "./browser-manager.js";
+import { getPage, closeBrowser } from "./browser-manager.js";
 import { startRun, updateRunStep, completeRun } from "../dashboard/run-history.js";
 import path from "node:path";
 import fs from "node:fs";
@@ -174,7 +174,8 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     await hl("A");
 
     completeRun(run.id, { success: true });
-    log("info", `[Row ${rowNumber}] Successfully processed!`);
+    log("info", `[Row ${rowNumber}] Successfully processed! Closing browser...`);
+    await closeBrowser();
     return { success: true, message: `Row ${rowNumber} processed successfully` };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -198,6 +199,10 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     if (run) {
       completeRun(run.id, { success: false, error: fullError, screenshotPath: screenshotPath ?? undefined });
     }
+
+    // Close browser after failure
+    log("info", `[Row ${rowNumber}] Closing browser after failure...`);
+    await closeBrowser().catch(() => {});
 
     // Write error to column A and highlight it RED
     try {
