@@ -7,10 +7,11 @@ function doGet(e) {
     var row = parseInt(e.parameter.row);
     var lastCol = sheet.getLastColumn();
     var rowData = sheet.getRange(row, 1, 1, lastCol).getValues()[0];
+    var tz = ss.getSpreadsheetTimeZone();
     var data = {};
     for (var i = 0; i < lastCol; i++) {
       var colLetter = String.fromCharCode(65 + i);
-      data[colLetter] = rowData[i] !== null && rowData[i] !== undefined ? rowData[i].toString() : "";
+      data[colLetter] = formatCellValue(rowData[i], tz);
     }
     return ContentService.createTextOutput(JSON.stringify({ row: row, data: data }))
       .setMimeType(ContentService.MimeType.JSON);
@@ -20,13 +21,14 @@ function doGet(e) {
     var start = parseInt(e.parameter.start) || 2;
     var end = e.parameter.end ? parseInt(e.parameter.end) : sheet.getLastRow();
     var lastCol = sheet.getLastColumn();
+    var tz2 = ss.getSpreadsheetTimeZone();
     var rows = [];
     for (var r = start; r <= end; r++) {
       var rowData = sheet.getRange(r, 1, 1, lastCol).getValues()[0];
       var data = {};
       for (var i = 0; i < lastCol; i++) {
         var colLetter = String.fromCharCode(65 + i);
-        data[colLetter] = rowData[i] !== null && rowData[i] !== undefined ? rowData[i].toString() : "";
+        data[colLetter] = formatCellValue(rowData[i], tz2);
       }
       rows.push({ row: r, data: data });
     }
@@ -68,4 +70,16 @@ function doGet(e) {
 
   return ContentService.createTextOutput(JSON.stringify({ error: "Unknown action" }))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+/**
+ * Format a cell value for JSON output.
+ * Dates are returned as DD/MM/YYYY strings to preserve the sheet's format.
+ */
+function formatCellValue(val, tz) {
+  if (val === null || val === undefined || val === "") return "";
+  if (val instanceof Date) {
+    return Utilities.formatDate(val, tz, "dd/MM/yyyy");
+  }
+  return val.toString();
 }
