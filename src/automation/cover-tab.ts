@@ -24,6 +24,7 @@ import type { ToolResult } from "../types.js";
  */
 export async function fillCoverTab(params: {
   donationAmount: string;
+  effectiveDate?: string; // DD/MM/YYYY — debit order date
 }): Promise<ToolResult> {
   const config = getConfig();
   const page = await getPage();
@@ -121,6 +122,20 @@ export async function fillCoverTab(params: {
       input.setAttribute("readonly", "true");
     }, params.donationAmount);
     await page.waitForTimeout(500);
+
+    // 3. Set Effective date (#txt15) to debit order date if provided
+    if (params.effectiveDate) {
+      log("info", `Setting Effective date (#txt15) to: ${params.effectiveDate}`);
+      const effectiveField = coverIframe.locator("#txt15");
+      await effectiveField.evaluate((el, dateVal) => {
+        const input = el as HTMLInputElement;
+        input.removeAttribute("readonly");
+        input.removeAttribute("disabled");
+        input.value = dateVal;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }, params.effectiveDate);
+      await page.waitForTimeout(500);
+    }
 
     // Click File button (#btnSave) inside the cover item form
     log("info", "Clicking File button in Cover item form");

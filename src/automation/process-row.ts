@@ -159,7 +159,9 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     updateRunStep(run.id, step);
     log("info", `[Row ${rowNumber}] Filling Cover tab...`);
     const donationAmount = d.contractAmount || "50";
-    const coverResult = await fillCoverTab({ donationAmount });
+    // Effective date = debit order day + inception month/year
+    const effectiveDate = buildEffectiveDate(collectionDay, inceptionDate);
+    const coverResult = await fillCoverTab({ donationAmount, effectiveDate });
     if (!coverResult.success) throw new Error(`Cover Tab failed: ${coverResult.message}`);
 
     await hl("O");
@@ -231,6 +233,16 @@ function padDay(day: string): string {
   const num = parseInt(day, 10);
   if (isNaN(num)) return "01";
   return num.toString().padStart(2, "0");
+}
+
+/** Build effective date from debit order day + inception date's month/year. e.g. day="15", inception="01/03/2025" → "15/03/2025" */
+function buildEffectiveDate(day: string, inceptionDate: string): string {
+  const parts = inceptionDate.split("/");
+  if (parts.length === 3) {
+    return `${day.padStart(2, "0")}/${parts[1]}/${parts[2]}`;
+  }
+  // Fallback: just use inception date with the day swapped
+  return inceptionDate;
 }
 
 function mapPaymentFrequency(freq?: string): string {
