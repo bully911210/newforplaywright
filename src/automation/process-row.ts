@@ -74,9 +74,10 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     await updateCell(sheetUrl, rowNumber, "A", "Processing...");
     await hlYellow("A");
 
-    // Format inception date from dateSaleMade (DD/MM/YYYY)
+    // Format dates from sheet (both come as full JS date strings like "Sat Jan 03 2026 00:00:00 GMT+0200")
     const inceptionDate = formatDate(d.dateSaleMade);
-    const collectionDay = d.debitOrderDate ? padDay(d.debitOrderDate) : "01";
+    const debitOrderDate = formatDate(d.debitOrderDate);           // e.g. "03/01/2026"
+    const collectionDay = debitOrderDate.split("/")[0] || "01";    // e.g. "03"
 
     // 2. Login
     step = "login";
@@ -159,9 +160,8 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     updateRunStep(run.id, step);
     log("info", `[Row ${rowNumber}] Filling Cover tab...`);
     const donationAmount = d.contractAmount || "50";
-    // Effective date = debit order day + inception month/year
-    const effectiveDate = buildEffectiveDate(collectionDay, inceptionDate);
-    const coverResult = await fillCoverTab({ donationAmount, effectiveDate });
+    // Effective date = the actual debit order date from the sheet
+    const coverResult = await fillCoverTab({ donationAmount, effectiveDate: debitOrderDate });
     if (!coverResult.success) throw new Error(`Cover Tab failed: ${coverResult.message}`);
 
     await hl("O");
@@ -232,22 +232,6 @@ function formatDate(dateStr?: string): string {
 
 function pad(n: number): string {
   return n.toString().padStart(2, "0");
-}
-
-function padDay(day: string): string {
-  const num = parseInt(day, 10);
-  if (isNaN(num)) return "01";
-  return num.toString().padStart(2, "0");
-}
-
-/** Build effective date from debit order day + inception date's month/year. e.g. day="15", inception="01/03/2025" → "15/03/2025" */
-function buildEffectiveDate(day: string, inceptionDate: string): string {
-  const parts = inceptionDate.split("/");
-  if (parts.length === 3) {
-    return `${day.padStart(2, "0")}/${parts[1]}/${parts[2]}`;
-  }
-  // Fallback: just use inception date with the day swapped
-  return inceptionDate;
 }
 
 function mapPaymentFrequency(freq?: string): string {

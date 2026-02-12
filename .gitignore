@@ -3,6 +3,7 @@ build/
 user-data/
 user-data-2/
 user-data-3/
+user-data-*-corrupt-*/
 .env
 *.log
 *.png

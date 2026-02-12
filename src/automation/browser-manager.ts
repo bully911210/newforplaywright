@@ -70,13 +70,57 @@ export async function getBrowserContext(): Promise<BrowserContext> {
         log("info", `Retrying in ${RETRY_DELAY_MS}ms...`);
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
       } else {
-        throw new Error(`Browser failed to launch after ${MAX_LAUNCH_RETRIES} attempts: ${msg}`);
+        // All retries failed — try nuclear option: reset corrupted profile
+        log("warn", `All ${MAX_LAUNCH_RETRIES} launch attempts failed. Attempting profile reset...`);
+        const recovered = await resetCorruptProfile(userDataDir, config);
+        if (recovered) {
+          browserContext = recovered;
+          return recovered;
+        }
+        throw new Error(`Browser failed to launch after ${MAX_LAUNCH_RETRIES} attempts + profile reset: ${msg}`);
       }
     }
   }
 
   // TypeScript needs this but it's unreachable
   throw new Error("Unreachable");
+}
+
+/**
+ * Nuclear fallback: rename the corrupted profile directory and launch with a fresh one.
+ * This handles the case where lock files have permanent OS-level EBUSY locks.
+ */
+async function resetCorruptProfile(
+  userDataDir: string,
+  config: ReturnType<typeof getConfig>
+): Promise<BrowserContext | null> {
+  try {
+    const corruptDir = `${userDataDir}-corrupt-${Date.now()}`;
+    log("warn", `Renaming corrupted profile to: ${corruptDir}`);
+    fs.renameSync(userDataDir, corruptDir);
+
+    log("info", `Launching browser with fresh profile at ${userDataDir}`);
+    const ctx = await chromium.launchPersistentContext(userDataDir, {
+      headless: config.headless,
+      viewport: { width: 1366, height: 768 },
+      args: [
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-gpu",
+      ],
+    });
+
+    ctx.on("close", () => {
+      browserContext = null;
+      log("info", "Browser context closed");
+    });
+
+    log("info", "Browser launched successfully after profile reset");
+    return ctx;
+  } catch (resetErr) {
+    log("error", `Profile reset also failed: ${resetErr}`);
+    return null;
+  }
 }
 
 export async function getPage(): Promise<Page> {
