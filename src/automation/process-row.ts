@@ -108,9 +108,10 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     if (!searchResult.success) throw new Error(`Client Search failed: ${searchResult.message}`);
 
     // 4. Fill Client tab
+    // Client inception date = debit order date (when the debit starts)
     step = "client_info";
     updateRunStep(run.id, step);
-    log("info", `[Row ${rowNumber}] Filling Client tab...`);
+    log("info", `[Row ${rowNumber}] Filling Client tab (inception=${debitOrderDate})...`);
     const clientResult = await fillClientInfo({
       name: d.clientName || "",
       contactName: d.clientSurname || "",
@@ -121,7 +122,7 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
       address2: d.city || "",
       address3: d.province || "",
       postalCode: d.postalCode || "",
-      inceptionDate: inceptionDate,
+      inceptionDate: debitOrderDate,
     });
     if (!clientResult.success) throw new Error(`Client Info failed: ${clientResult.message}`);
 
@@ -135,13 +136,15 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     await hl(["B", "C", "D", "E", "F", "G", "H", "I", "J", "R"]);
 
     // 6. Fill Policy Info
+    // Policy inception date = debit order date (when the debit/policy starts)
+    // NOT the sale date (which is when the contract was signed)
     step = "policy_info";
     updateRunStep(run.id, step);
-    log("info", `[Row ${rowNumber}] Filling Policy Info...`);
+    log("info", `[Row ${rowNumber}] Filling Policy Info (inception=${debitOrderDate})...`);
     const policyResult = await fillPolicyInfo({
       npcCompanyCode: "CIV01",
       paymentFrequency: mapPaymentFrequency(d.paymentFrequency),
-      inceptionDate: inceptionDate,
+      inceptionDate: debitOrderDate,
     });
     if (!policyResult.success) throw new Error(`Policy Info failed: ${policyResult.message}`);
 

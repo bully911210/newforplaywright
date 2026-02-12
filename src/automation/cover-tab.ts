@@ -81,31 +81,49 @@ export async function fillCoverTab(params: {
       await page.waitForTimeout(1000);
     }
 
-    // Wait for #dialogRiskItems to appear
-    const dialog = coverIframe.locator("#dialogRiskItems");
-    const dialogVisible = await dialog.isVisible().catch(() => false);
-    if (!dialogVisible) {
-      return { success: false, message: "Dialog #dialogRiskItems did not appear after clicking Donation row." };
-    }
-    log("info", "dialogRiskItems is visible");
+    // Wait for the Donation dialog to appear
+    // The dialog may be #dialogRiskItems or a generic modal with "Add" button
+    log("info", "Waiting for Donation dialog to appear");
+    await page.waitForTimeout(2000);
 
-    // Click #addItem button
-    const addBtn = coverIframe.locator("#addItem");
-    const addVisible = await addBtn.isVisible().catch(() => false);
-    if (!addVisible) {
-      return { success: false, message: "#addItem button not visible in the dialog." };
+    // Try to find the Add button — it may be #addItem or a button labeled "Add"
+    let addClicked = false;
+
+    // Strategy 1: Look for #addItem button
+    const addItemBtn = coverIframe.locator("#addItem");
+    if (await addItemBtn.isVisible().catch(() => false)) {
+      log("info", "Found #addItem button, clicking it");
+      await addItemBtn.click();
+      addClicked = true;
     }
-    log("info", "Clicking #addItem button");
-    await addBtn.click();
+
+    // Strategy 2: Look for a button with text "Add" in the dialog area
+    if (!addClicked) {
+      const addTextBtn = coverIframe.locator('button:has-text("Add"), input[value="Add"], a:has-text("Add")').last();
+      if (await addTextBtn.isVisible().catch(() => false)) {
+        log("info", "Found 'Add' button by text, clicking it");
+        await addTextBtn.click();
+        addClicked = true;
+      }
+    }
+
+    if (!addClicked) {
+      return { success: false, message: "Could not find Add/addItem button in the Donation dialog." };
+    }
+
+    // Wait for the form to load inside the iframe after Add click
+    // The iframe navigates to Screen.aspx with the item form
+    log("info", "Waiting for cover item form to load after Add...");
     await page.waitForTimeout(5000);
 
     // After addItem, the iframe navigates to a form (Screen.aspx)
     // Donation amount must go into BOTH #txt11 (Item, editable) and #txt1 (Section, readonly formula).
 
     // 1. Fill #txt11 (Item) - this is the editable field
+    // Use a longer timeout since the iframe may still be loading
     log("info", `Setting Item (#txt11) to donation amount: ${params.donationAmount}`);
     const itemField = coverIframe.locator("#txt11");
-    await itemField.waitFor({ state: "visible", timeout: config.actionTimeout });
+    await itemField.waitFor({ state: "visible", timeout: 30000 });
     await itemField.click({ clickCount: 3 });
     await itemField.fill(params.donationAmount);
     await itemField.press("Tab");
