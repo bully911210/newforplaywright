@@ -22,6 +22,8 @@ export interface Config {
 
   pollIntervalMs: number;
   autoStartPolling: boolean;
+
+  dashboardPort: number;
 }
 
 let configCache: Config | null = null;
@@ -48,6 +50,8 @@ export function getConfig(): Config {
 
     pollIntervalMs: parseInt(process.env.POLL_INTERVAL_MS || "30000"),
     autoStartPolling: process.env.AUTO_START_POLLING === "true",
+
+    dashboardPort: parseInt(process.env.DASHBOARD_PORT || "3000"),
   };
 
   return configCache;

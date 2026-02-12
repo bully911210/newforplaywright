@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Standalone runner for MMX auto-polling.
- * Runs the polling loop without the MCP server - for use as a background service.
+ * Standalone runner for MMX auto-polling + dashboard.
+ * Runs the polling loop and serves the monitoring dashboard on localhost.
  *
  * Usage: node build/standalone.js
  */
@@ -11,6 +11,7 @@ import { getConfig } from "./config.js";
 import { log } from "./utils/logger.js";
 import { startPolling, stopPolling } from "./automation/poll-sheet.js";
 import { closeBrowser } from "./automation/browser-manager.js";
+import { startDashboard, stopDashboard } from "./dashboard/server.js";
 
 async function main() {
   const config = getConfig();
@@ -19,11 +20,15 @@ async function main() {
   log("info", `Poll interval: ${config.pollIntervalMs}ms`);
   log("info", `Sheet URL: ${config.googleSheetWebAppUrl ? "configured" : "MISSING"}`);
   log("info", `Headless: ${config.headless}`);
+  log("info", `Dashboard port: ${config.dashboardPort}`);
 
   if (!config.googleSheetWebAppUrl) {
     log("error", "GOOGLE_SHEET_WEBAPP_URL not configured in .env");
     process.exit(1);
   }
+
+  // Start dashboard server
+  startDashboard(config.dashboardPort);
 
   // Start polling
   const result = startPolling();
@@ -33,6 +38,7 @@ async function main() {
   const shutdown = async () => {
     log("info", "Shutting down...");
     stopPolling();
+    stopDashboard();
     await closeBrowser();
     process.exit(0);
   };

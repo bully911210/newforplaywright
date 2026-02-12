@@ -7,7 +7,7 @@
     "mmx-mcp": "./build/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node -e \"const fs=require('fs'),p=require('path');const d=p.join('build','dashboard');fs.mkdirSync(d,{recursive:true});fs.copyFileSync(p.join('src','dashboard','dashboard.html'),p.join(d,'dashboard.html'));console.log('Copied dashboard.html to build/dashboard/')\"",
     "dev": "tsc --watch",
     "start": "node build/index.js",
     "poll": "node build/standalone.js"

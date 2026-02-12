@@ -1,7 +1,11 @@
 import { getConfig } from "../config.js";
-import { log } from "../utils/logger.js";
+import { log, logEmitter } from "../utils/logger.js";
 import { listClients } from "../sheets/client.js";
 import { processRow } from "./process-row.js";
+
+function emitStatus(state: "idle" | "polling" | "processing", detail?: string): void {
+  logEmitter.emit("status", { state, detail, timestamp: new Date().toISOString() });
+}
 
 let polling = false;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -23,6 +27,7 @@ export function startPolling(intervalMs?: number): { success: boolean; message: 
 
   polling = true;
   log("info", `Sheet polling started (interval: ${interval}ms)`);
+  emitStatus("polling");
   schedulePoll(interval);
 
   return { success: true, message: `Polling started. Checking every ${interval / 1000}s for new rows.` };
@@ -40,6 +45,7 @@ export function stopPolling(): { success: boolean; message: string } {
   }
 
   log("info", "Sheet polling stopped");
+  emitStatus("idle");
   return { success: true, message: "Polling stopped." };
 }
 
@@ -72,6 +78,7 @@ async function pollOnce() {
 
   try {
     processing = true;
+    emitStatus("polling", "Checking for new rows...");
     log("info", "Poll: checking for unprocessed rows...");
 
     // Single API call to fetch all rows (includes status)
@@ -98,6 +105,7 @@ async function pollOnce() {
         break;
       }
 
+      emitStatus("processing", `Row ${row.rowNumber} (${row.name})`);
       log("info", `Poll: processing row ${row.rowNumber} (${row.name})...`);
       const result = await processRow(row.rowNumber);
       log("info", `Poll: row ${row.rowNumber} result: ${result.success ? "SUCCESS" : "FAILED"} - ${result.message}`);
@@ -112,5 +120,6 @@ async function pollOnce() {
     log("error", `Poll error: ${msg}`);
   } finally {
     processing = false;
+    if (polling) emitStatus("polling");
   }
 }

@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Automation Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; overflow: hidden; }
+
+    .header { background: #16213e; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #333; }
+    .header h1 { font-size: 1.3rem; font-weight: 600; }
+    .header-right { display: flex; align-items: center; gap: 12px; }
+    .status-badge { padding: 4px 14px; border-radius: 12px; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .status-badge.idle { background: #555; color: #ccc; }
+    .status-badge.polling { background: #1565c0; color: #fff; }
+    .status-badge.processing { background: #e65100; color: #fff; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+    .status-detail { font-size: 0.8rem; color: #999; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+    .main { display: grid; grid-template-columns: 200px 1fr; height: calc(100vh - 52px); }
+
+    .sidebar { background: #16213e; padding: 16px; border-right: 1px solid #333; display: flex; flex-direction: column; gap: 16px; }
+    .sidebar h3 { font-size: 0.85rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+    .sidebar button { width: 100%; padding: 10px; border: none; border-radius: 6px; cursor: pointer; font-size: 0.85rem; font-weight: 600; transition: background 0.2s; }
+    .btn-start { background: #2e7d32; color: white; }
+    .btn-start:hover { background: #388e3c; }
+    .btn-stop { background: #c62828; color: white; }
+    .btn-stop:hover { background: #d32f2f; }
+    .btn-start:disabled, .btn-stop:disabled { opacity: 0.3; cursor: not-allowed; }
+    .stats { font-size: 0.8rem; color: #aaa; }
+    .stats div { margin-bottom: 6px; display: flex; justify-content: space-between; }
+    .stats span { color: #e0e0e0; font-weight: 600; }
+    .stat-good { color: #4caf50 !important; }
+    .stat-bad { color: #f44336 !important; }
+    .wf-list { font-size: 0.78rem; color: #aaa; }
+    .wf-item { margin-bottom: 4px; padding: 4px 8px; background: #0f0f23; border-radius: 4px; }
+
+    .content { display: flex; flex-direction: column; overflow: hidden; }
+
+    .log-panel { flex: 0 0 40%; overflow-y: auto; padding: 8px 12px; font-family: 'Consolas', 'Courier New', monospace; font-size: 0.75rem; background: #0f0f23; border-bottom: 1px solid #333; line-height: 1.5; }
+    .log-entry { padding: 1px 0; white-space: pre-wrap; word-break: break-all; }
+    .log-entry.info { color: #8be9fd; }
+    .log-entry.warn { color: #f1fa8c; }
+    .log-entry.error { color: #ff5555; font-weight: bold; }
+    .log-entry.debug { color: #6272a4; }
+
+    .runs-panel { flex: 1; overflow-y: auto; padding: 12px; }
+    .runs-panel h2 { font-size: 0.95rem; margin-bottom: 8px; color: #aaa; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    th { text-align: left; padding: 8px 10px; background: #16213e; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.5px; color: #888; position: sticky; top: 0; z-index: 1; }
+    td { padding: 7px 10px; border-bottom: 1px solid #2a2a3e; }
+    tr:hover td { background: rgba(255,255,255,0.03); }
+    .st-success { color: #4caf50; font-weight: 600; }
+    .st-failed { color: #f44336; font-weight: 600; }
+    .st-running { color: #ff9800; font-weight: 600; }
+    .error-link { color: #42a5f5; cursor: pointer; text-decoration: underline; font-size: 0.75rem; }
+    .error-link:hover { color: #90caf9; }
+    .step-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 0.7rem; background: #2a2a3e; color: #aaa; }
+
+    .overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 100; justify-content: center; align-items: center; }
+    .overlay.visible { display: flex; }
+    .error-card { background: #1a1a2e; border: 1px solid #444; border-radius: 10px; padding: 24px; width: 90%; max-width: 800px; max-height: 85vh; overflow-y: auto; }
+    .error-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .error-card h3 { color: #f44336; font-size: 1rem; }
+    .close-btn { cursor: pointer; font-size: 1.5rem; color: #666; line-height: 1; padding: 4px 8px; border-radius: 4px; }
+    .close-btn:hover { color: #fff; background: #333; }
+    .error-card pre { background: #0f0f23; padding: 14px; border-radius: 6px; overflow-x: auto; font-size: 0.8rem; line-height: 1.6; white-space: pre-wrap; word-break: break-all; color: #ff8a80; margin-bottom: 12px; }
+    .error-card img { max-width: 100%; border-radius: 6px; border: 1px solid #444; }
+    .error-card .ss-label { font-size: 0.8rem; color: #888; margin-bottom: 8px; }
+
+    .empty-state { text-align: center; padding: 40px 20px; color: #555; }
+    .empty-state p { font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Automation Dashboard</h1>
+    <div class="header-right">
+      <span id="statusDetail" class="status-detail"></span>
+      <span id="statusBadge" class="status-badge idle">Idle</span>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+      <div>
+        <h3>Controls</h3>
+        <div style="margin-top:10px; display:flex; flex-direction:column; gap:6px;">
+          <button class="btn-start" id="btnStart" onclick="doStart()">Start Polling</button>
+          <button class="btn-stop" id="btnStop" onclick="doStop()" disabled>Stop Polling</button>
+        </div>
+      </div>
+      <div>
+        <h3>Stats</h3>
+        <div class="stats" style="margin-top:8px;">
+          <div>Total runs <span id="statTotal">0</span></div>
+          <div>Success <span id="statSuccess" class="stat-good">0</span></div>
+          <div>Failed <span id="statFailed" class="stat-bad">0</span></div>
+          <div>SSE <span id="sseStatus">...</span></div>
+        </div>
+      </div>
+      <div>
+        <h3>Workflows</h3>
+        <div id="workflowList" class="wf-list" style="margin-top:8px;">
+          <div class="empty-state" style="padding:8px;"><p style="font-size:0.75rem;">None yet</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="log-panel" id="logPanel"></div>
+      <div class="runs-panel">
+        <h2>Run History</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Row</th>
+              <th>Client</th>
+              <th>Workflow</th>
+              <th>Status</th>
+              <th>Step</th>
+              <th>Duration</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="runsBody"></tbody>
+        </table>
+        <div id="emptyRuns" class="empty-state"><p>No runs yet. Start polling to process rows.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay" id="overlay" onclick="if(event.target===this)closeError()">
+    <div class="error-card">
+      <div class="error-card-header">
+        <h3 id="errorTitle">Error Details</h3>
+        <span class="close-btn" onclick="closeError()">&times;</span>
+      </div>
+      <pre id="errorText"></pre>
+      <div id="ssSection" style="display:none">
+        <div class="ss-label">Failure Screenshot:</div>
+        <img id="errorImg" />
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const MAX_LOG = 500;
+    let isPolling = false;
+
+    // --- SSE ---
+    const sse = new EventSource('/api/events');
+
+    sse.addEventListener('log', (e) => {
+      appendLog(JSON.parse(e.data));
+    });
+
+    sse.addEventListener('status', (e) => {
+      const s = JSON.parse(e.data);
+      setStatus(s.state, s.detail);
+    });
+
+    sse.addEventListener('run', () => {
+      fetchRuns();
+    });
+
+    sse.onopen = () => {
+      const el = document.getElementById('sseStatus');
+      el.textContent = 'Connected';
+      el.className = 'stat-good';
+    };
+
+    sse.onerror = () => {
+      const el = document.getElementById('sseStatus');
+      el.textContent = 'Reconnecting...';
+      el.className = 'stat-bad';
+    };
+
+    // --- Logs ---
+    function appendLog(entry) {
+      const panel = document.getElementById('logPanel');
+      const div = document.createElement('div');
+      div.className = 'log-entry ' + entry.level;
+      const t = entry.timestamp.split('T')[1].split('.')[0];
+      let text = '[' + t + '] [' + entry.level.toUpperCase() + '] ' + entry.message;
+      if (entry.data) text += ' ' + (typeof entry.data === 'string' ? entry.data : JSON.stringify(entry.data));
+      div.textContent = text;
+      panel.appendChild(div);
+      while (panel.children.length > MAX_LOG) panel.removeChild(panel.firstChild);
+      panel.scrollTop = panel.scrollHeight;
+    }
+
+    // --- Status ---
+    function setStatus(state, detail) {
+      const badge = document.getElementById('statusBadge');
+      badge.className = 'status-badge ' + state;
+      badge.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+      document.getElementById('statusDetail').textContent = detail || '';
+      isPolling = state !== 'idle';
+      document.getElementById('btnStart').disabled = isPolling;
+      document.getElementById('btnStop').disabled = !isPolling;
+    }
+
+    // --- Runs ---
+    async function fetchRuns() {
+      try {
+        const r = await fetch('/api/runs');
+        const data = await r.json();
+        renderRuns(data.runs || []);
+      } catch {}
+    }
+
+    function renderRuns(runs) {
+      const tbody = document.getElementById('runsBody');
+      const empty = document.getElementById('emptyRuns');
+      if (!runs.length) { empty.style.display = ''; tbody.innerHTML = ''; return; }
+      empty.style.display = 'none';
+      tbody.innerHTML = '';
+
+      let successCount = 0, failCount = 0;
+      const wfSet = new Set();
+
+      for (const run of runs) {
+        if (run.status === 'success') successCount++;
+        if (run.status === 'failed') failCount++;
+        wfSet.add(run.workflowLabel);
+
+        const tr = document.createElement('tr');
+        const dur = run.durationMs != null ? (run.durationMs / 1000).toFixed(1) + 's' : '...';
+        const stClass = 'st-' + run.status;
+        const errHtml = run.error
+          ? '<span class="error-link" onclick="showError(this)" data-err="' + esc(run.error) + '" data-ss="' + (run.screenshotPath || '') + '">View</span>'
+          : '';
+        tr.innerHTML =
+          '<td>' + run.id + '</td>' +
+          '<td>' + run.rowNumber + '</td>' +
+          '<td>' + esc(run.clientName) + '</td>' +
+          '<td>' + esc(run.workflowLabel) + '</td>' +
+          '<td class="' + stClass + '">' + run.status.toUpperCase() + '</td>' +
+          '<td><span class="step-badge">' + esc(run.currentStep) + '</span></td>' +
+          '<td>' + dur + '</td>' +
+          '<td>' + errHtml + '</td>';
+        tbody.appendChild(tr);
+      }
+
+      document.getElementById('statTotal').textContent = runs.length;
+      document.getElementById('statSuccess').textContent = successCount;
+      document.getElementById('statFailed').textContent = failCount;
+
+      const wfDiv = document.getElementById('workflowList');
+      if (wfSet.size) {
+        wfDiv.innerHTML = [...wfSet].map(w => '<div class="wf-item">' + esc(w) + '</div>').join('');
+      }
+    }
+
+    // --- Error overlay ---
+    function showError(el) {
+      const errMsg = el.getAttribute('data-err');
+      const ss = el.getAttribute('data-ss');
+      document.getElementById('errorText').textContent = errMsg;
+      const ssSection = document.getElementById('ssSection');
+      if (ss) {
+        document.getElementById('errorImg').src = '/screenshots/' + ss;
+        ssSection.style.display = '';
+      } else {
+        ssSection.style.display = 'none';
+      }
+      document.getElementById('overlay').classList.add('visible');
+    }
+
+    function closeError() {
+      document.getElementById('overlay').classList.remove('visible');
+    }
+
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeError(); });
+
+    // --- Controls ---
+    async function doStart() {
+      document.getElementById('btnStart').disabled = true;
+      await fetch('/api/polling/start', { method: 'POST' });
+    }
+
+    async function doStop() {
+      document.getElementById('btnStop').disabled = true;
+      await fetch('/api/polling/stop', { method: 'POST' });
+    }
+
+    // --- Util ---
+    function esc(s) {
+      if (!s) return '';
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    // --- Init ---
+    fetch('/api/status').then(r => r.json()).then(d => {
+      setStatus(d.polling ? 'polling' : 'idle');
+    }).catch(() => {});
+    fetchRuns();
+  </script>
+</body>
+</html>

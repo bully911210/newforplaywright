@@ -7,5 +7,6 @@ user-data-3/
 *.log
 *.png
 nul
+screenshots/
 .claude/
 .mcp.json
