@@ -2,6 +2,68 @@ import { getPage } from "./browser-manager.js";
 import { getConfig } from "../config.js";
 import { log } from "../utils/logger.js";
 import type { ToolResult } from "../types.js";
+import type { Page } from "playwright";
+
+/**
+ * Dismiss any popup/overlay that appears after login.
+ * MMX shows a notification popup after login that blocks the contentframe.
+ * Clicking anywhere outside the popup dismisses it.
+ */
+async function dismissPostLoginPopup(page: Page): Promise<void> {
+  try {
+    await page.waitForTimeout(1500);
+
+    const contentFrame = page.frame({ name: "contentframe" });
+    if (!contentFrame) return;
+
+    // Strategy 1: Check for any visible modal inside contentframe and dismiss it
+    const modal = contentFrame.locator('.modal.fade.in, .modal.show, [class*="modal"][style*="display: block"]');
+    if (await modal.first().isVisible().catch(() => false)) {
+      log("info", "Post-login popup detected, dismissing...");
+
+      // Try clicking the close/OK button first
+      const closeBtn = contentFrame.locator('.modal.fade.in .btn, .modal.fade.in .close, .modal.show .btn, .modal.show .close');
+      if (await closeBtn.first().isVisible().catch(() => false)) {
+        await closeBtn.first().click({ force: true });
+        log("info", "Dismissed popup via close/OK button");
+        await page.waitForTimeout(1000);
+        return;
+      }
+
+      // Try clicking outside the modal (on the backdrop)
+      const backdrop = contentFrame.locator('.modal-backdrop');
+      if (await backdrop.isVisible().catch(() => false)) {
+        await backdrop.click({ force: true, position: { x: 10, y: 10 } });
+        log("info", "Dismissed popup by clicking backdrop");
+        await page.waitForTimeout(1000);
+        return;
+      }
+
+      // Last resort: press Escape
+      await page.keyboard.press("Escape");
+      log("info", "Dismissed popup via Escape key");
+      await page.waitForTimeout(1000);
+      return;
+    }
+
+    // Strategy 2: Check for any overlay/popup on the main page (outside frames)
+    const mainModal = page.locator('.modal.fade.in, .modal.show, [class*="popup"], [class*="overlay"]');
+    if (await mainModal.first().isVisible().catch(() => false)) {
+      log("info", "Post-login popup detected on main page, pressing Escape");
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(1000);
+      return;
+    }
+
+    // Strategy 3: Click on the page body to dismiss any floating popup
+    // The user said "click anywhere but on the popup to make it disappear"
+    await page.mouse.click(100, 100);
+    await page.waitForTimeout(500);
+    log("info", "Clicked page body to dismiss any floating popup");
+  } catch (err) {
+    log("warn", `Post-login popup dismiss failed (non-critical): ${err}`);
+  }
+}
 
 export async function loginToMMX(
   username?: string,
@@ -81,6 +143,11 @@ export async function loginToMMX(
     // Login form gone = success. Check for the contentframe to confirm.
     const hasContentFrame = await page.isVisible('frame[name="contentframe"], iframe[name="contentframe"]').catch(() => false);
     log("info", `Login successful. URL: ${afterUrl}, contentframe present: ${hasContentFrame}`);
+
+    // Dismiss any post-login popup/overlay that may block the contentframe.
+    // These popups can be dismissed by clicking anywhere outside them.
+    await dismissPostLoginPopup(page);
+
     return { success: true, message: `Login successful. Content frame loaded: ${hasContentFrame}` };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);

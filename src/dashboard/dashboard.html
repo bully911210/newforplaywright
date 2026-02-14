@@ -92,6 +92,16 @@
         </div>
       </div>
       <div>
+        <h3>Speed</h3>
+        <div style="margin-top:8px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+            <input type="range" id="concSlider" min="1" max="5" value="1" style="flex:1; accent-color:#1565c0;" oninput="updateConcLabel(this.value)" onchange="setConcurrency(this.value)">
+            <span id="concLabel" style="font-size:0.9rem; font-weight:700; color:#e0e0e0; min-width:24px; text-align:center;">1x</span>
+          </div>
+          <div style="font-size:0.65rem; color:#666; margin-top:4px;">Concurrent browser workers</div>
+        </div>
+      </div>
+      <div>
         <h3>Stats</h3>
         <div class="stats" style="margin-top:8px;">
           <div>Total runs <span id="statTotal">0</span></div>
@@ -295,9 +305,28 @@
       return d.innerHTML;
     }
 
+    // --- Concurrency ---
+    function updateConcLabel(val) {
+      document.getElementById('concLabel').textContent = val + 'x';
+    }
+
+    async function setConcurrency(val) {
+      try {
+        await fetch('/api/concurrency', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ concurrency: parseInt(val) })
+        });
+      } catch {}
+    }
+
     // --- Init ---
     fetch('/api/status').then(r => r.json()).then(d => {
       setStatus(d.polling ? 'polling' : 'idle');
+      if (d.concurrency) {
+        document.getElementById('concSlider').value = d.concurrency;
+        updateConcLabel(d.concurrency);
+      }
     }).catch(() => {});
     fetchRuns();
   </script>

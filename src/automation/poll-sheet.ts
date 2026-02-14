@@ -2,6 +2,7 @@ import { getConfig } from "../config.js";
 import { log, logEmitter } from "../utils/logger.js";
 import { listClients } from "../sheets/client.js";
 import { processRow } from "./process-row.js";
+import { runWithWorker } from "./browser-manager.js";
 
 function emitStatus(state: "idle" | "polling" | "processing", detail?: string): void {
   logEmitter.emit("status", { state, detail, timestamp: new Date().toISOString() });
@@ -11,11 +12,22 @@ let polling = false;
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let processing = false;
 
+/** Max concurrent rows to process at once (1-5). Default: 1. */
+let maxConcurrency = 1;
+
+export function getConcurrency(): number {
+  return maxConcurrency;
+}
+
+export function setConcurrency(n: number): void {
+  maxConcurrency = Math.max(1, Math.min(5, Math.floor(n)));
+  log("info", `Concurrency set to ${maxConcurrency}x`);
+}
+
 /**
  * Start polling the Google Sheet for rows ready to process.
  * Only rows with status "New" in column A are picked up.
- * (The external workflow sets status to "New" once all fields are filled.)
- * Processes one row at a time, sequentially.
+ * Processes up to `maxConcurrency` rows simultaneously.
  */
 export function startPolling(intervalMs?: number): { success: boolean; message: string } {
   if (polling) {
@@ -26,7 +38,7 @@ export function startPolling(intervalMs?: number): { success: boolean; message: 
   const interval = intervalMs ?? config.pollIntervalMs;
 
   polling = true;
-  log("info", `Sheet polling started (interval: ${interval}ms)`);
+  log("info", `Sheet polling started (interval: ${interval}ms, concurrency: ${maxConcurrency}x)`);
   emitStatus("polling");
   schedulePoll(interval);
 
@@ -64,7 +76,7 @@ function schedulePoll(intervalMs: number) {
 
 async function pollOnce() {
   if (processing) {
-    log("info", "Poll: skipping - already processing a row");
+    log("info", "Poll: skipping - already processing");
     return;
   }
 
@@ -81,11 +93,9 @@ async function pollOnce() {
     emitStatus("polling", "Checking for new rows...");
     log("info", "Poll: checking for unprocessed rows...");
 
-    // Single API call to fetch all rows (includes status)
     const clients = await listClients(sheetUrl, config.columnMapping);
 
     // Only process rows where status is explicitly "New"
-    // (set by the external workflow when all fields are populated and ready)
     const unprocessedRows = clients.filter((c) => {
       const status = (c.status || "").trim().toLowerCase();
       return status === "new";
@@ -98,21 +108,53 @@ async function pollOnce() {
 
     log("info", `Poll: found ${unprocessedRows.length} unprocessed row(s): ${unprocessedRows.map((r) => r.rowNumber).join(", ")}`);
 
-    // Process rows one at a time
-    for (const row of unprocessedRows) {
-      if (!polling) {
-        log("info", "Poll: stopped during processing");
-        break;
+    if (maxConcurrency <= 1) {
+      // Sequential mode (1x) — original behavior
+      for (const row of unprocessedRows) {
+        if (!polling) {
+          log("info", "Poll: stopped during processing");
+          break;
+        }
+        emitStatus("processing", `Row ${row.rowNumber} (${row.name})`);
+        log("info", `Poll: processing row ${row.rowNumber} (${row.name})...`);
+        const result = await processRow(row.rowNumber);
+        log("info", `Poll: row ${row.rowNumber} result: ${result.success ? "SUCCESS" : "FAILED"} - ${result.message}`);
+
+        if (unprocessedRows.length > 1) {
+          await new Promise((r) => setTimeout(r, 3000));
+        }
       }
+    } else {
+      // Concurrent mode (2-5x) — process N rows at a time, each in its own worker
+      const batchSize = Math.min(maxConcurrency, unprocessedRows.length);
+      log("info", `Poll: processing ${batchSize} rows concurrently (${maxConcurrency}x mode)`);
 
-      emitStatus("processing", `Row ${row.rowNumber} (${row.name})`);
-      log("info", `Poll: processing row ${row.rowNumber} (${row.name})...`);
-      const result = await processRow(row.rowNumber);
-      log("info", `Poll: row ${row.rowNumber} result: ${result.success ? "SUCCESS" : "FAILED"} - ${result.message}`);
+      for (let i = 0; i < unprocessedRows.length; i += batchSize) {
+        if (!polling) {
+          log("info", "Poll: stopped during processing");
+          break;
+        }
 
-      // Small delay between rows to avoid overwhelming the system
-      if (unprocessedRows.length > 1) {
-        await new Promise((r) => setTimeout(r, 3000));
+        const batch = unprocessedRows.slice(i, i + batchSize);
+        const names = batch.map((r) => `Row ${r.rowNumber}`).join(", ");
+        emitStatus("processing", `${names} (${batch.length} concurrent)`);
+
+        const promises = batch.map((row, idx) => {
+          const workerId = `w${idx + 1}`;
+          return runWithWorker(workerId, async () => {
+            log("info", `Poll [${workerId}]: processing row ${row.rowNumber} (${row.name})...`);
+            const result = await processRow(row.rowNumber);
+            log("info", `Poll [${workerId}]: row ${row.rowNumber} result: ${result.success ? "SUCCESS" : "FAILED"} - ${result.message}`);
+            return result;
+          });
+        });
+
+        await Promise.allSettled(promises);
+
+        // Small delay between batches
+        if (i + batchSize < unprocessedRows.length) {
+          await new Promise((r) => setTimeout(r, 2000));
+        }
       }
     }
   } catch (error) {

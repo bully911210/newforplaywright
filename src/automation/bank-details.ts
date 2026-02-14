@@ -72,45 +72,26 @@ export async function fillBankDetails(params: {
       fieldsSet.push("accountNumber");
     }
 
-    // Branch code (#txt30) - expects a numeric branch code
-    // South African banks have universal branch codes. We map bank name -> numeric code
-    // and enter it directly, then Tab to trigger validation.
+    // Branch code (#txt30) — type the BANK NAME into the field, then Tab to trigger
+    // the lookup modal. The modal shows matching banks; click the first result to
+    // auto-populate the branch code and description fields.
     if (params.branchCode) {
-      // Map of common SA bank names to their universal branch codes
-      const bankBranchCodes: Record<string, string> = {
-        "capitec": "470010",
-        "absa": "632005",
-        "fnb": "250655",
-        "first national bank": "250655",
-        "nedbank": "198765",
-        "standard bank": "051001",
-        "african bank": "430000",
-        "investec": "580105",
-        "tymebank": "678910",
-        "tyme bank": "678910",
-        "discovery bank": "679000",
-        "bidvest bank": "462005",
-        "grindrod bank": "223626",
-        "sasfin bank": "683000",
-        "mercantile bank": "450105",
-        "ubank": "431010",
-      };
-
-      const bankNameLower = params.branchCode.toLowerCase().trim();
-      const numericCode = bankBranchCodes[bankNameLower] || params.branchCode;
-      log("info", `Setting branch code for bank "${params.branchCode}": ${numericCode}`);
+      log("info", `Setting branch code by typing bank name: "${params.branchCode}"`);
 
       const branchInput = policyIframe.locator("#txt30");
+
+      // Click the empty field first, then type the bank name
+      await branchInput.click();
+      await page.waitForTimeout(300);
       await branchInput.click({ clickCount: 3 });
-      await branchInput.fill(numericCode);
+      await branchInput.fill(params.branchCode);
+      await page.waitForTimeout(500);
+
+      // Tab out to trigger the lookup
       await branchInput.press("Tab");
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
 
-      // After Tab, a #modalSearch lookup modal may appear if the code triggered a search.
-      // Or a #modalMessage error may appear if the code is invalid.
-      // Dismiss any modals that appeared.
-
-      // First check for #modalMessage (validation error)
+      // First check for #modalMessage (validation error) and dismiss
       const modalMessage = policyIframe.locator('#modalMessage.modal.fade.in, #modalMessage.in');
       if (await modalMessage.isVisible().catch(() => false)) {
         const msgText = await policyIframe.locator('#modalMessage .modal-body, #modalMessage #lblMessage').textContent().catch(() => "") ?? "";
@@ -120,30 +101,31 @@ export async function fillBankDetails(params: {
         await page.waitForTimeout(1000);
       }
 
-      // Check for #modalSearch (lookup results)
+      // Check for #modalSearch (lookup results) — this is the expected flow
       const modalSearch = policyIframe.locator("#modalSearch.modal.fade.in, #modalSearch.in");
       if (await modalSearch.isVisible().catch(() => false)) {
         log("info", "Branch code search modal appeared, selecting first result");
 
-        // Try clicking the first result in #linkTable
-        const firstResult = policyIframe.locator('#linkTable a, #linkTable tr[onclick], #linkTable div[onclick], #linkTable td').first();
+        // Click the first clickable result in the search results table
+        const firstResult = policyIframe.locator('#linkTable a, #linkTable tr[onclick], #linkTable td a, #linkTable tr td').first();
         if (await firstResult.isVisible().catch(() => false)) {
           await firstResult.click();
-          await page.waitForTimeout(1500);
+          log("info", "Clicked first search result");
+          await page.waitForTimeout(2000);
         } else {
-          // Close the modal
-          log("info", "No results in search modal, closing");
-          const closeBtn = policyIframe.locator('#modalSearch button[data-dismiss="modal"], #modalSearch .close');
+          log("warn", `No results found for bank "${params.branchCode}" in lookup modal`);
+          const closeBtn = policyIframe.locator('#modalSearch button[data-dismiss="modal"], #modalSearch .close, #modalSearch .btn');
           await closeBtn.first().click({ force: true }).catch(() => {});
           await page.waitForTimeout(500);
         }
+      } else {
+        log("info", "No search modal appeared after Tab — branch code may have auto-resolved");
       }
 
-      // Verify the branch code was set by reading the description field
+      // Verify the branch code was set
       const branchDesc = await policyIframe.locator("#txtDesc30").inputValue().catch(() => "");
-      if (branchDesc) {
-        log("info", `Branch code description: "${branchDesc}"`);
-      }
+      const branchVal = await branchInput.inputValue().catch(() => "");
+      log("info", `Branch code result: code="${branchVal}", description="${branchDesc}"`);
 
       // Dismiss any remaining modals
       const anyModal = policyIframe.locator('.modal.fade.in');

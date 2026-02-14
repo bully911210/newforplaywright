@@ -10,7 +10,7 @@
 import { getConfig } from "./config.js";
 import { log } from "./utils/logger.js";
 import { startPolling, stopPolling } from "./automation/poll-sheet.js";
-import { closeBrowser } from "./automation/browser-manager.js";
+import { closeAllBrowsers } from "./automation/browser-manager.js";
 import { startDashboard, stopDashboard } from "./dashboard/server.js";
 
 async function main() {
@@ -39,7 +39,7 @@ async function main() {
     log("info", "Shutting down...");
     stopPolling();
     stopDashboard();
-    await closeBrowser();
+    await closeAllBrowsers();
     process.exit(0);
   };
 

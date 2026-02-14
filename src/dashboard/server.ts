@@ -6,7 +6,7 @@ import { log, logEmitter, getRecentLogs } from "../utils/logger.js";
 import type { LogEntry } from "../utils/logger.js";
 import { getRunHistory, getCurrentRun } from "./run-history.js";
 import type { RunRecord } from "./run-history.js";
-import { startPolling, stopPolling, isPolling } from "../automation/poll-sheet.js";
+import { startPolling, stopPolling, isPolling, getConcurrency, setConcurrency } from "../automation/poll-sheet.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCREENSHOT_DIR = path.resolve(__dirname, "../../screenshots");
@@ -44,13 +44,29 @@ export function startDashboard(port: number): void {
       } else if (pathname === "/api/runs" && req.method === "GET") {
         serveJSON(res, { runs: getRunHistory(), current: getCurrentRun() });
       } else if (pathname === "/api/status" && req.method === "GET") {
-        serveJSON(res, { polling: isPolling(), currentRun: getCurrentRun() });
+        serveJSON(res, { polling: isPolling(), currentRun: getCurrentRun(), concurrency: getConcurrency() });
       } else if (pathname === "/api/polling/start" && req.method === "POST") {
         const result = startPolling();
         serveJSON(res, result);
       } else if (pathname === "/api/polling/stop" && req.method === "POST") {
         const result = stopPolling();
         serveJSON(res, result);
+      } else if (pathname === "/api/concurrency" && req.method === "GET") {
+        serveJSON(res, { concurrency: getConcurrency() });
+      } else if (pathname === "/api/concurrency" && req.method === "POST") {
+        const chunks: Buffer[] = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => {
+          try {
+            const body = JSON.parse(Buffer.concat(chunks).toString());
+            setConcurrency(body.concurrency ?? 1);
+            serveJSON(res, { concurrency: getConcurrency() });
+          } catch {
+            res.writeHead(400);
+            res.end("Bad request");
+          }
+        });
+        return; // async handler — don't fall through
       } else if (pathname.startsWith("/screenshots/")) {
         serveScreenshot(res, pathname);
       } else {
