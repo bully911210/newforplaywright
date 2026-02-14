@@ -3,10 +3,176 @@ import { getConfig } from "../config.js";
 import { log } from "../utils/logger.js";
 import type { ToolResult } from "../types.js";
 
+/**
+ * Comprehensive South African bank name → universal branch code mapping.
+ * Covers all major banks plus common misspellings, abbreviations, and aliases.
+ * These are the universal/electronic branch codes used across all branches.
+ */
+const BANK_BRANCH_CODES: Record<string, string> = {
+  // ABSA
+  "absa": "632005",
+  "absa bank": "632005",
+  "absa bank limited": "632005",
+  "absa bank ltd": "632005",
+  "absa group": "632005",
+
+  // Capitec
+  "capitec": "470010",
+  "capitec bank": "470010",
+  "capitec bank limited": "470010",
+  "capitec bank ltd": "470010",
+
+  // FNB / First National Bank
+  "fnb": "250655",
+  "first national bank": "250655",
+  "first national": "250655",
+  "fnb bank": "250655",
+  "first national bank limited": "250655",
+
+  // Nedbank
+  "nedbank": "198765",
+  "nedbank limited": "198765",
+  "nedbank ltd": "198765",
+  "ned bank": "198765",
+
+  // Standard Bank
+  "standard bank": "051001",
+  "standard bank of south africa": "051001",
+  "standard bank limited": "051001",
+  "standard bank ltd": "051001",
+  "standard bank of sa": "051001",
+  "sbsa": "051001",
+  "stanbic": "051001",
+
+  // Investec
+  "investec": "580105",
+  "investec bank": "580105",
+  "investec bank limited": "580105",
+  "investec bank ltd": "580105",
+  "investec private bank": "580105",
+
+  // African Bank
+  "african bank": "430000",
+  "african bank limited": "430000",
+  "african bank ltd": "430000",
+
+  // TymeBank
+  "tymebank": "678910",
+  "tyme bank": "678910",
+  "tyme": "678910",
+
+  // Discovery Bank
+  "discovery bank": "679000",
+  "discovery": "679000",
+  "discovery bank limited": "679000",
+
+  // Bank Zero
+  "bank zero": "888000",
+  "bankzero": "888000",
+  "bank zero limited": "888000",
+
+  // Bidvest Bank
+  "bidvest bank": "462005",
+  "bidvest": "462005",
+  "bidvest bank limited": "462005",
+
+  // Grindrod Bank
+  "grindrod bank": "223626",
+  "grindrod": "223626",
+  "grindrod bank limited": "223626",
+
+  // Sasfin Bank
+  "sasfin": "683000",
+  "sasfin bank": "683000",
+  "sasfin bank limited": "683000",
+
+  // Mercantile Bank
+  "mercantile bank": "450905",
+  "mercantile": "450905",
+
+  // Old Mutual / OM
+  "old mutual": "462005",
+
+  // SA Post Office (Postbank)
+  "postbank": "460005",
+  "post bank": "460005",
+  "sa post office": "460005",
+  "sapo": "460005",
+
+  // Ubank
+  "ubank": "431010",
+  "ubank limited": "431010",
+
+  // Access Bank
+  "access bank": "410506",
+  "access bank sa": "410506",
+
+  // Albaraka Bank
+  "albaraka bank": "800000",
+  "albaraka": "800000",
+  "al baraka": "800000",
+
+  // HBZ Bank
+  "hbz bank": "570100",
+  "hbz": "570100",
+  "habib bank zurich": "570100",
+
+  // HSBC
+  "hsbc": "587000",
+  "hsbc bank": "587000",
+
+  // JPMorgan
+  "jpmorgan": "432000",
+  "jp morgan": "432000",
+
+  // Citibank
+  "citibank": "350005",
+  "citi bank": "350005",
+  "citibank na": "350005",
+
+  // Bank of China
+  "bank of china": "686000",
+
+  // Standard Chartered
+  "standard chartered": "730020",
+  "standard chartered bank": "730020",
+
+  // Wizzit / Bank of Athens (historical)
+  "wizzit": "460005",
+  "bank of athens": "410506",
+};
+
+/**
+ * Look up the universal branch code for a given bank name.
+ * Falls back to the raw input if no match is found (in case a numeric code was passed directly).
+ */
+function lookupBranchCode(bankName: string): { code: string; matched: boolean } {
+  const normalized = bankName.toLowerCase().trim();
+
+  // Direct lookup
+  if (BANK_BRANCH_CODES[normalized]) {
+    return { code: BANK_BRANCH_CODES[normalized], matched: true };
+  }
+
+  // If the input is already a numeric branch code (5-6 digits), use it directly
+  if (/^\d{5,6}$/.test(normalized)) {
+    return { code: normalized, matched: true };
+  }
+
+  // Fuzzy matching: check if input contains any known bank keyword
+  for (const [key, code] of Object.entries(BANK_BRANCH_CODES)) {
+    if (normalized.includes(key) || key.includes(normalized)) {
+      return { code, matched: true };
+    }
+  }
+
+  return { code: bankName, matched: false };
+}
+
 export async function fillBankDetails(params: {
   accountHolder?: string;
   accountNumber?: string;
-  branchCode?: string;
+  branchCode?: string;  // This receives the BANK NAME from the sheet (e.g., "Capitec", "Standard Bank")
   collectionDay?: string;
   paymentMethod?: string;
 }): Promise<ToolResult> {
@@ -72,22 +238,24 @@ export async function fillBankDetails(params: {
       fieldsSet.push("accountNumber");
     }
 
-    // Branch code (#txt30) — type the BANK NAME into the field, then Tab to trigger
-    // the lookup modal. The modal shows matching banks; click the first result to
-    // auto-populate the branch code and description fields.
+    // Branch code (#txt30) — The sheet gives us a BANK NAME (e.g., "Capitec", "Standard Bank").
+    // We look up the universal branch code from our hardcoded mapping, then type the NUMERIC
+    // code into #txt30 and Tab to trigger the lookup. This is far more reliable than typing
+    // the bank name, which often fails in the search modal.
     if (params.branchCode) {
-      log("info", `Setting branch code by typing bank name: "${params.branchCode}"`);
+      const { code: numericBranchCode, matched } = lookupBranchCode(params.branchCode);
+      log("info", `Setting branch code for bank "${params.branchCode}": ${numericBranchCode} (mapped=${matched})`);
 
       const branchInput = policyIframe.locator("#txt30");
 
-      // Click the empty field first, then type the bank name
+      // Click the field, clear it, type the NUMERIC branch code
       await branchInput.click();
       await page.waitForTimeout(300);
       await branchInput.click({ clickCount: 3 });
-      await branchInput.fill(params.branchCode);
+      await branchInput.fill(numericBranchCode);
       await page.waitForTimeout(500);
 
-      // Tab out to trigger the lookup
+      // Tab out to trigger the lookup/validation
       await branchInput.press("Tab");
       await page.waitForTimeout(3000);
 
@@ -101,7 +269,7 @@ export async function fillBankDetails(params: {
         await page.waitForTimeout(1000);
       }
 
-      // Check for #modalSearch (lookup results) — this is the expected flow
+      // Check for #modalSearch (lookup results) — click first result to confirm
       const modalSearch = policyIframe.locator("#modalSearch.modal.fade.in, #modalSearch.in");
       if (await modalSearch.isVisible().catch(() => false)) {
         log("info", "Branch code search modal appeared, selecting first result");
@@ -113,19 +281,47 @@ export async function fillBankDetails(params: {
           log("info", "Clicked first search result");
           await page.waitForTimeout(2000);
         } else {
-          log("warn", `No results found for bank "${params.branchCode}" in lookup modal`);
+          log("info", "No results in search modal, closing");
           const closeBtn = policyIframe.locator('#modalSearch button[data-dismiss="modal"], #modalSearch .close, #modalSearch .btn');
           await closeBtn.first().click({ force: true }).catch(() => {});
           await page.waitForTimeout(500);
         }
       } else {
-        log("info", "No search modal appeared after Tab — branch code may have auto-resolved");
+        log("info", "No search modal appeared after Tab — branch code auto-resolved");
       }
 
-      // Verify the branch code was set
+      // Verify the branch code was set by reading the description field
       const branchDesc = await policyIframe.locator("#txtDesc30").inputValue().catch(() => "");
       const branchVal = await branchInput.inputValue().catch(() => "");
-      log("info", `Branch code result: code="${branchVal}", description="${branchDesc}"`);
+      log("info", `Branch code description: "${branchDesc}"`);
+
+      // If the description is empty, the branch code didn't resolve — try the bank name as fallback
+      if (!branchDesc && matched) {
+        log("warn", `Branch code ${numericBranchCode} didn't resolve, trying bank name "${params.branchCode}" as fallback`);
+        await branchInput.click();
+        await page.waitForTimeout(300);
+        await branchInput.click({ clickCount: 3 });
+        await branchInput.fill(params.branchCode);
+        await page.waitForTimeout(500);
+        await branchInput.press("Tab");
+        await page.waitForTimeout(3000);
+
+        // Handle search modal
+        if (await modalSearch.isVisible().catch(() => false)) {
+          const firstResult = policyIframe.locator('#linkTable a, #linkTable tr[onclick], #linkTable td a, #linkTable tr td').first();
+          if (await firstResult.isVisible().catch(() => false)) {
+            await firstResult.click();
+            await page.waitForTimeout(2000);
+          }
+        }
+
+        // Dismiss any modals
+        const anyModal = policyIframe.locator('.modal.fade.in');
+        if (await anyModal.first().isVisible().catch(() => false)) {
+          await policyIframe.locator('.modal.fade.in .btn, .modal.fade.in button[data-dismiss="modal"]').first().click({ force: true }).catch(() => {});
+          await page.waitForTimeout(500);
+        }
+      }
 
       // Dismiss any remaining modals
       const anyModal = policyIframe.locator('.modal.fade.in');
