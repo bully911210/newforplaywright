@@ -59,9 +59,24 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     // LOG ALL RAW SHEET DATA
     log("info", `[Row ${rowNumber}] ========== RAW SHEET DATA ==========`);
     for (const [key, value] of Object.entries(d)) {
-      log("info", `[Row ${rowNumber}]   ${key} = "${value}"`);
+      // Truncate long values in the log (some cells contain corrupted multi-row data)
+      const displayVal = value && value.length > 100 ? value.substring(0, 100) + "...[TRUNCATED]" : value;
+      log("info", `[Row ${rowNumber}]   ${key} = "${displayVal}"`);
     }
     log("info", `[Row ${rowNumber}] ====================================`);
+
+    // CRITICAL FIX: The Google Apps Script sometimes returns corrupted data where
+    // a cell contains ALL rows' values concatenated with newlines. This happens with
+    // dropdown/validation columns (province, accountType). We extract ONLY the first
+    // non-empty line from any multi-line cell value.
+    for (const key of Object.keys(d)) {
+      const val = d[key];
+      if (val && val.includes("\n")) {
+        const firstLine = val.split("\n").map((l: string) => l.trim()).filter((l: string) => l.length > 0)[0] || "";
+        log("warn", `[Row ${rowNumber}] MULTI-LINE FIX: "${key}" had ${val.split("\n").length} lines, using first: "${firstLine}"`);
+        d[key] = firstLine;
+      }
+    }
 
     // Only process rows with status "New" (case-insensitive)
     const rowStatus = (d.status || "").trim().toLowerCase();
