@@ -269,8 +269,8 @@ function lookupBranchCode(bankName: string): { code: string; matched: boolean } 
     return { code: bestMatch.code, matched: true };
   }
 
-  log("warn", `No branch code mapping found for bank "${bankName}" — passing raw value`);
-  return { code: bankName, matched: false };
+  log("warn", `No branch code mapping found for bank "${bankName}" — will leave field empty`);
+  return { code: "", matched: false };
 }
 
 export async function fillBankDetails(params: {
@@ -348,15 +348,26 @@ export async function fillBankDetails(params: {
     // the bank name, which often fails in the search modal.
     if (params.branchCode) {
       const { code: numericBranchCode, matched } = lookupBranchCode(params.branchCode);
-      log("info", `Setting branch code for bank "${params.branchCode}": ${numericBranchCode} (mapped=${matched})`);
+
+      if (!matched) {
+        log("error", `UNKNOWN BANK: "${params.branchCode}" — no branch code mapping found. SKIPPING branch code field to avoid pasting a bank name into a numeric field.`);
+      } else {
+        log("info", `Setting branch code for bank "${params.branchCode}": ${numericBranchCode}`);
+      }
 
       const branchInput = policyIframe.locator("#txt30");
+
+      // ONLY type into the field if we have a valid numeric branch code
+      // NEVER paste a bank name into the numeric branch code field
+      if (!matched) {
+        log("warn", `Leaving branch code field empty for "${params.branchCode}" — manual intervention needed`);
+      }
 
       // Click the field, clear it, type the NUMERIC branch code
       await branchInput.click();
       await page.waitForTimeout(300);
       await branchInput.click({ clickCount: 3 });
-      await branchInput.fill(numericBranchCode);
+      await branchInput.fill(matched ? numericBranchCode : "");
       await page.waitForTimeout(500);
 
       // Tab out to trigger the lookup/validation
@@ -397,34 +408,10 @@ export async function fillBankDetails(params: {
       // Verify the branch code was set by reading the description field
       const branchDesc = await policyIframe.locator("#txtDesc30").inputValue().catch(() => "");
       const branchVal = await branchInput.inputValue().catch(() => "");
-      log("info", `Branch code description: "${branchDesc}"`);
+      log("info", `Branch code result: value="${branchVal}", description="${branchDesc}"`);
 
-      // If the description is empty, the branch code didn't resolve — try the bank name as fallback
-      if (!branchDesc && matched) {
-        log("warn", `Branch code ${numericBranchCode} didn't resolve, trying bank name "${params.branchCode}" as fallback`);
-        await branchInput.click();
-        await page.waitForTimeout(300);
-        await branchInput.click({ clickCount: 3 });
-        await branchInput.fill(params.branchCode);
-        await page.waitForTimeout(500);
-        await branchInput.press("Tab");
-        await page.waitForTimeout(3000);
-
-        // Handle search modal
-        if (await modalSearch.isVisible().catch(() => false)) {
-          const firstResult = policyIframe.locator('#linkTable a, #linkTable tr[onclick], #linkTable td a, #linkTable tr td').first();
-          if (await firstResult.isVisible().catch(() => false)) {
-            await firstResult.click();
-            await page.waitForTimeout(2000);
-          }
-        }
-
-        // Dismiss any modals
-        const anyModal = policyIframe.locator('.modal.fade.in');
-        if (await anyModal.first().isVisible().catch(() => false)) {
-          await policyIframe.locator('.modal.fade.in .btn, .modal.fade.in button[data-dismiss="modal"]').first().click({ force: true }).catch(() => {});
-          await page.waitForTimeout(500);
-        }
+      if (!branchDesc) {
+        log("warn", `Branch code ${numericBranchCode} description is empty — may need manual check`);
       }
 
       // Dismiss any remaining modals
