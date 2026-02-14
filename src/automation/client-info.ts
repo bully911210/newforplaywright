@@ -41,10 +41,14 @@ export async function fillClientInfo(params: {
   const page = await getPage();
   const fieldsSet: string[] = [];
 
+  log("info", `==== CLIENT INFO START ====`);
+  log("info", `RAW PARAMS: name="${params.name}", contactName="${params.contactName}", idNumber="${params.idNumber}", cellphone="${params.cellphone}", email="${params.email}", address1="${params.address1}", address2="${params.address2}", address3="${params.address3}", postalCode="${params.postalCode}", inceptionDate="${params.inceptionDate}"`);
+
   try {
     // Frame structure: main page (login.aspx) -> contentframe -> #ifrmClient
     const contentFrame = page.frame({ name: "contentframe" });
     if (!contentFrame) {
+      log("error", "CLIENT INFO: Content frame not found!");
       return { success: false, message: "Content frame not found. Is the user logged in?" };
     }
 
@@ -209,6 +213,7 @@ export async function fillClientInfo(params: {
       fieldsSet.push("postalSameAsResidential");
     }
 
+    log("info", `==== CLIENT INFO COMPLETE ====`);
     log("info", `Client info filled: ${fieldsSet.join(", ")}`);
     return {
       success: true,
@@ -217,7 +222,9 @@ export async function fillClientInfo(params: {
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    log("error", `==== CLIENT INFO FAILED ====`);
     log("error", `Client info error: ${msg}`);
+    log("error", `Fields set before error: ${fieldsSet.join(", ")}`);
     return { success: false, message: `Client info error: ${msg}`, data: { fieldsSet } };
   }
 }

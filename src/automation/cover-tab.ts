@@ -29,9 +29,13 @@ export async function fillCoverTab(params: {
   const config = getConfig();
   const page = await getPage();
 
+  log("info", `==== COVER TAB START ====`);
+  log("info", `RAW PARAMS: donationAmount="${params.donationAmount}", effectiveDate="${params.effectiveDate}"`);
+
   try {
     const contentFrame = page.frame({ name: "contentframe" });
     if (!contentFrame) {
+      log("error", "COVER TAB: Content frame not found!");
       return { success: false, message: "Content frame not found. Is the user logged in?" };
     }
 
@@ -179,13 +183,15 @@ export async function fillCoverTab(params: {
       }
     }
 
-    log("info", `Cover tab filled and filed. Donation amount: ${params.donationAmount}`);
+    log("info", `==== COVER TAB COMPLETE ====`);
+    log("info", `Cover tab filled and filed. Donation amount: ${params.donationAmount}, effectiveDate: ${params.effectiveDate}`);
     return {
       success: true,
       message: `Cover tab filled. Donation amount: ${params.donationAmount}`,
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    log("error", `==== COVER TAB FAILED ====`);
     log("error", `Cover tab error: ${msg}`);
     return { success: false, message: `Cover tab error: ${msg}` };
   }

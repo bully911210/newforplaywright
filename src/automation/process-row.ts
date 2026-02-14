@@ -56,6 +56,13 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     const row = await fetchClientRow(sheetUrl, rowNumber, config.columnMapping);
     const d = row.mappedData;
 
+    // LOG ALL RAW SHEET DATA
+    log("info", `[Row ${rowNumber}] ========== RAW SHEET DATA ==========`);
+    for (const [key, value] of Object.entries(d)) {
+      log("info", `[Row ${rowNumber}]   ${key} = "${value}"`);
+    }
+    log("info", `[Row ${rowNumber}] ====================================`);
+
     // Only process rows with status "New" (case-insensitive)
     const rowStatus = (d.status || "").trim().toLowerCase();
     if (rowStatus !== "new") {
@@ -153,14 +160,20 @@ export async function processRow(rowNumber: number): Promise<{ success: boolean;
     // 7. Fill Bank Details
     step = "bank_details";
     updateRunStep(run.id, step);
-    log("info", `[Row ${rowNumber}] Filling Bank Details...`);
-    const bankResult = await fillBankDetails({
+    const bankParams = {
       accountHolder: d.accountHolder || `${d.clientName || ""} ${d.clientSurname || ""}`.trim(),
       accountNumber: d.accountNumber || "",
       branchCode: d.bank || "",
       collectionDay: collectionDay,
       paymentMethod: d.accountType || "Savings",
-    });
+    };
+    log("info", `[Row ${rowNumber}] Filling Bank Details with:`);
+    log("info", `[Row ${rowNumber}]   accountHolder = "${bankParams.accountHolder}"`);
+    log("info", `[Row ${rowNumber}]   accountNumber = "${bankParams.accountNumber}"`);
+    log("info", `[Row ${rowNumber}]   branchCode (RAW from sheet column L "bank") = "${bankParams.branchCode}"`);
+    log("info", `[Row ${rowNumber}]   collectionDay = "${bankParams.collectionDay}" (extracted from debitOrderDate="${debitOrderDate}")`);
+    log("info", `[Row ${rowNumber}]   paymentMethod (RAW from sheet column N "accountType") = "${bankParams.paymentMethod}"`);
+    const bankResult = await fillBankDetails(bankParams);
     if (!bankResult.success) throw new Error(`Bank Details failed: ${bankResult.message}`);
 
     await hl(["K", "L", "M", "N", "Q"]);

@@ -15,6 +15,9 @@ export async function fillPolicyInfo(params: {
   const page = await getPage();
   const fieldsSet: string[] = [];
 
+  log("info", `==== POLICY INFO START ====`);
+  log("info", `RAW PARAMS: npcCompanyCode="${params.npcCompanyCode}", paymentFrequency="${params.paymentFrequency}", inceptionDate="${params.inceptionDate}", expiryDate="${params.expiryDate}", reviewDate="${params.reviewDate}", reviewMonth="${params.reviewMonth}"`);
+
   try {
     // The form content lives inside the #ifrmPolicy iframe.
     // We must interact with elements INSIDE the iframe, not on the main page.
@@ -210,6 +213,7 @@ export async function fillPolicyInfo(params: {
       fieldsSet.push("reviewMonth");
     }
 
+    log("info", `==== POLICY INFO COMPLETE ====`);
     log("info", `Policy info filled: ${fieldsSet.join(", ")}`);
     return {
       success: true,
@@ -218,7 +222,9 @@ export async function fillPolicyInfo(params: {
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    log("error", `==== POLICY INFO FAILED ====`);
     log("error", `Policy info error: ${msg}`);
+    log("error", `Fields set before error: ${fieldsSet.join(", ")}`);
     return { success: false, message: `Policy info error: ${msg}`, data: { fieldsSet } };
   }
 }

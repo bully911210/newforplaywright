@@ -4,7 +4,7 @@ import { log } from "../utils/logger.js";
 import type { ToolResult } from "../types.js";
 
 /**
- * Comprehensive South African bank name → universal branch code mapping.
+ * Comprehensive South African bank name -> universal branch code mapping.
  * Covers all major banks plus common misspellings, abbreviations, and aliases.
  * These are the universal/electronic branch codes used across all branches.
  */
@@ -163,8 +163,6 @@ function levenshtein(a: string, b: string): number {
 
 /**
  * Core bank keywords for deduplication during fuzzy matching.
- * We only fuzzy-match against the shortest/canonical name for each bank
- * to avoid false positives (e.g., "standard bank" fuzzy-matching "standard chartered").
  */
 const CANONICAL_BANK_NAMES: Array<{ name: string; code: string }> = [
   { name: "absa", code: "632005" },
@@ -203,28 +201,40 @@ const CANONICAL_BANK_NAMES: Array<{ name: string; code: string }> = [
  * Look up the universal branch code for a given bank name.
  * Uses multiple strategies:
  *   1. Exact match (case-insensitive)
- *   2. Already a numeric branch code → pass through
+ *   2. Already a numeric branch code -> pass through
  *   3. Substring/contains match
- *   4. Levenshtein fuzzy match (catches typos like "Capitek", "Standar Bank", "Nedbenk")
- * Falls back to the raw input if nothing matches.
+ *   4. Strip common suffixes and retry
+ *   5. Levenshtein fuzzy match
+ *
+ * NEVER returns the bank name as a code. Returns { code: "", matched: false } if nothing matches.
  */
-function lookupBranchCode(bankName: string): { code: string; matched: boolean } {
+function lookupBranchCode(bankName: string): { code: string; matched: boolean; strategy: string } {
+  if (!bankName || !bankName.trim()) {
+    log("warn", `lookupBranchCode: empty bank name provided`);
+    return { code: "", matched: false, strategy: "empty_input" };
+  }
+
   const normalized = bankName.toLowerCase().trim();
+  log("info", `lookupBranchCode: input="${bankName}", normalized="${normalized}"`);
 
   // Strategy 1: Direct exact lookup
   if (BANK_BRANCH_CODES[normalized]) {
-    return { code: BANK_BRANCH_CODES[normalized], matched: true };
+    const code = BANK_BRANCH_CODES[normalized];
+    log("info", `lookupBranchCode: EXACT MATCH "${normalized}" -> "${code}"`);
+    return { code, matched: true, strategy: "exact" };
   }
 
   // Strategy 2: Already a numeric branch code (5-6 digits), use directly
   if (/^\d{5,6}$/.test(normalized)) {
-    return { code: normalized, matched: true };
+    log("info", `lookupBranchCode: NUMERIC PASSTHROUGH "${normalized}"`);
+    return { code: normalized, matched: true, strategy: "numeric_passthrough" };
   }
 
-  // Strategy 3: Substring/contains match (e.g., "Standard Bank Ltd." contains "standard bank")
+  // Strategy 3: Substring/contains match
   for (const [key, code] of Object.entries(BANK_BRANCH_CODES)) {
     if (normalized.includes(key) || key.includes(normalized)) {
-      return { code, matched: true };
+      log("info", `lookupBranchCode: SUBSTRING MATCH "${normalized}" <-> "${key}" -> "${code}"`);
+      return { code, matched: true, strategy: `substring:${key}` };
     }
   }
 
@@ -233,17 +243,21 @@ function lookupBranchCode(bankName: string): { code: string; matched: boolean } 
     .replace(/\b(bank|limited|ltd|of south africa|of sa|sa|group|pty)\b/g, "")
     .replace(/\s+/g, " ")
     .trim();
+  log("info", `lookupBranchCode: stripped="${stripped}" (from "${normalized}")`);
+
   if (stripped && BANK_BRANCH_CODES[stripped]) {
-    return { code: BANK_BRANCH_CODES[stripped], matched: true };
+    const code = BANK_BRANCH_CODES[stripped];
+    log("info", `lookupBranchCode: STRIPPED EXACT "${stripped}" -> "${code}"`);
+    return { code, matched: true, strategy: `stripped_exact:${stripped}` };
   }
   for (const [key, code] of Object.entries(BANK_BRANCH_CODES)) {
     if (stripped && (stripped.includes(key) || key.includes(stripped))) {
-      return { code, matched: true };
+      log("info", `lookupBranchCode: STRIPPED SUBSTRING "${stripped}" <-> "${key}" -> "${code}"`);
+      return { code, matched: true, strategy: `stripped_substring:${key}` };
     }
   }
 
   // Strategy 5: Levenshtein fuzzy match against canonical names
-  // Allow up to 2 edits for short names, 3 for longer names
   let bestMatch: { name: string; code: string; dist: number } | null = null;
   for (const entry of CANONICAL_BANK_NAMES) {
     const dist = levenshtein(normalized, entry.name);
@@ -265,12 +279,12 @@ function lookupBranchCode(bankName: string): { code: string; matched: boolean } 
   }
 
   if (bestMatch) {
-    log("info", `Fuzzy matched bank "${bankName}" → "${bestMatch.name}" (distance=${bestMatch.dist})`);
-    return { code: bestMatch.code, matched: true };
+    log("info", `lookupBranchCode: FUZZY MATCH "${bankName}" -> "${bestMatch.name}" (dist=${bestMatch.dist}) -> "${bestMatch.code}"`);
+    return { code: bestMatch.code, matched: true, strategy: `fuzzy:${bestMatch.name}:dist=${bestMatch.dist}` };
   }
 
-  log("warn", `No branch code mapping found for bank "${bankName}" — will leave field empty`);
-  return { code: "", matched: false };
+  log("error", `lookupBranchCode: NO MATCH for bank "${bankName}". Normalized="${normalized}", stripped="${stripped}". Will leave field empty.`);
+  return { code: "", matched: false, strategy: "no_match" };
 }
 
 export async function fillBankDetails(params: {
@@ -283,24 +297,17 @@ export async function fillBankDetails(params: {
   const config = getConfig();
   const page = await getPage();
   const fieldsSet: string[] = [];
+  const diagnostics: Record<string, string> = {};
+
+  // LOG ALL RAW INPUT PARAMS
+  log("info", `==== BANK DETAILS START ====`);
+  log("info", `RAW PARAMS: accountHolder="${params.accountHolder}", accountNumber="${params.accountNumber}", branchCode(bankName)="${params.branchCode}", collectionDay="${params.collectionDay}", paymentMethod(accountType)="${params.paymentMethod}"`);
 
   try {
-    // The form content lives inside the #ifrmPolicy iframe.
-    // Bank Details is a sub-tab within that same iframe.
-    //
-    // Calibrated selectors from live DOM inspection (inside #ifrmPolicy):
-    //   Bank Details sub-tab: #tabli1
-    //   Account holder/payee: #txt32 (input)
-    //   Account number: #txt31 (input)
-    //   Branch code: #txt30 (input), #txtDesc30 (readonly description)
-    //   Collection day: #txt27 (SELECT, default "01")
-    //   Payment method: #txt28 (SELECT, default "N")
-
-    // The page structure after login is:
-    //   main page (login.aspx) -> contentframe (PolicyDetails etc.) -> #ifrmPolicy
     const contentFrame = page.frame({ name: "contentframe" });
     if (!contentFrame) {
-      return { success: false, message: "Content frame not found. Is the user logged in?", data: { fieldsSet } };
+      log("error", "BANK DETAILS: Content frame not found!");
+      return { success: false, message: "Content frame not found. Is the user logged in?", data: { fieldsSet, diagnostics } };
     }
 
     // Click the "Policy" tab inside the content frame to make #ifrmPolicy visible.
@@ -320,104 +327,154 @@ export async function fillBankDetails(params: {
     await bankTab.click();
     await page.waitForTimeout(500);
 
-    // Account holder / payee name (#txt32)
+    // ==================== ACCOUNT HOLDER (#txt32) ====================
     if (params.accountHolder) {
-      log("info", `Setting account holder: ${params.accountHolder}`);
+      log("info", `[FIELD] Account holder: filling #txt32 with "${params.accountHolder}"`);
       const holderInput = policyIframe.locator("#txt32");
       await holderInput.click({ clickCount: 3 });
       await holderInput.fill(params.accountHolder);
       await holderInput.press("Tab");
       await page.waitForTimeout(300);
+
+      // VERIFY
+      const actualVal = await holderInput.inputValue().catch(() => "ERROR_READING");
+      diagnostics.accountHolder = actualVal;
+      log("info", `[VERIFY] Account holder: expected="${params.accountHolder}", actual="${actualVal}"`);
+      if (actualVal !== params.accountHolder) {
+        log("warn", `[MISMATCH] Account holder value doesn't match! Expected="${params.accountHolder}", Got="${actualVal}"`);
+      }
       fieldsSet.push("accountHolder");
     }
 
-    // Account number (#txt31)
+    // ==================== ACCOUNT NUMBER (#txt31) ====================
     if (params.accountNumber) {
-      log("info", `Setting account number: ${params.accountNumber}`);
+      log("info", `[FIELD] Account number: filling #txt31 with "${params.accountNumber}"`);
       const accountInput = policyIframe.locator("#txt31");
       await accountInput.click({ clickCount: 3 });
       await accountInput.fill(params.accountNumber);
       await accountInput.press("Tab");
       await page.waitForTimeout(300);
+
+      // VERIFY
+      const actualVal = await accountInput.inputValue().catch(() => "ERROR_READING");
+      diagnostics.accountNumber = actualVal;
+      log("info", `[VERIFY] Account number: expected="${params.accountNumber}", actual="${actualVal}"`);
+      if (actualVal !== params.accountNumber) {
+        log("warn", `[MISMATCH] Account number value doesn't match! Expected="${params.accountNumber}", Got="${actualVal}"`);
+      }
       fieldsSet.push("accountNumber");
     }
 
-    // Branch code (#txt30) — The sheet gives us a BANK NAME (e.g., "Capitec", "Standard Bank").
-    // We look up the universal branch code from our hardcoded mapping, then type the NUMERIC
-    // code into #txt30 and Tab to trigger the lookup. This is far more reliable than typing
-    // the bank name, which often fails in the search modal.
+    // ==================== BRANCH CODE (#txt30) ====================
+    // The sheet gives us a BANK NAME (e.g., "Capitec", "Standard Bank", "First National Bank").
+    // We MUST convert it to a NUMERIC branch code (e.g., "470010", "051001", "250655").
+    // NEVER EVER type a bank name into #txt30 — it only accepts numbers.
     if (params.branchCode) {
-      const { code: numericBranchCode, matched } = lookupBranchCode(params.branchCode);
+      log("info", `[FIELD] Branch code: raw input from sheet = "${params.branchCode}"`);
 
-      if (!matched) {
-        log("error", `UNKNOWN BANK: "${params.branchCode}" — no branch code mapping found. SKIPPING branch code field to avoid pasting a bank name into a numeric field.`);
-      } else {
-        log("info", `Setting branch code for bank "${params.branchCode}": ${numericBranchCode}`);
+      // SAFETY CHECK: Is this already numeric? Or is it a bank name?
+      const isNumeric = /^\d+$/.test(params.branchCode.trim());
+      log("info", `[FIELD] Branch code: isNumeric=${isNumeric}`);
+
+      const { code: numericBranchCode, matched, strategy } = lookupBranchCode(params.branchCode);
+      log("info", `[FIELD] Branch code lookup result: matched=${matched}, code="${numericBranchCode}", strategy="${strategy}"`);
+
+      // SAFETY: Verify the result is actually numeric
+      const resultIsNumeric = /^\d+$/.test(numericBranchCode);
+      if (numericBranchCode && !resultIsNumeric) {
+        log("error", `[SAFETY] Branch code lookup returned NON-NUMERIC value "${numericBranchCode}" for bank "${params.branchCode}"! THIS IS A BUG — refusing to type it.`);
+        diagnostics.branchCode = `BUG: non-numeric "${numericBranchCode}"`;
+        return {
+          success: false,
+          message: `FATAL: Branch code lookup returned non-numeric value "${numericBranchCode}" for bank "${params.branchCode}". This is a bug.`,
+          data: { fieldsSet, diagnostics },
+        };
       }
 
       const branchInput = policyIframe.locator("#txt30");
 
-      // ONLY type into the field if we have a valid numeric branch code
-      // NEVER paste a bank name into the numeric branch code field
-      if (!matched) {
-        log("warn", `Leaving branch code field empty for "${params.branchCode}" — manual intervention needed`);
-      }
-
-      // Click the field, clear it, type the NUMERIC branch code
-      await branchInput.click();
-      await page.waitForTimeout(300);
-      await branchInput.click({ clickCount: 3 });
-      await branchInput.fill(matched ? numericBranchCode : "");
-      await page.waitForTimeout(500);
-
-      // Tab out to trigger the lookup/validation
-      await branchInput.press("Tab");
-      await page.waitForTimeout(3000);
-
-      // First check for #modalMessage (validation error) and dismiss
-      const modalMessage = policyIframe.locator('#modalMessage.modal.fade.in, #modalMessage.in');
-      if (await modalMessage.isVisible().catch(() => false)) {
-        const msgText = await policyIframe.locator('#modalMessage .modal-body, #modalMessage #lblMessage').textContent().catch(() => "") ?? "";
-        log("info", `modalMessage appeared: "${msgText.trim().substring(0, 100)}"`);
-        const msgCloseBtn = policyIframe.locator('#modalMessage .btn, #modalMessage button[data-dismiss="modal"]');
-        await msgCloseBtn.first().click({ force: true }).catch(() => {});
-        await page.waitForTimeout(1000);
-      }
-
-      // Check for #modalSearch (lookup results) — click first result to confirm
-      const modalSearch = policyIframe.locator("#modalSearch.modal.fade.in, #modalSearch.in");
-      if (await modalSearch.isVisible().catch(() => false)) {
-        log("info", "Branch code search modal appeared, selecting first result");
-
-        // Click the first clickable result in the search results table
-        const firstResult = policyIframe.locator('#linkTable a, #linkTable tr[onclick], #linkTable td a, #linkTable tr td').first();
-        if (await firstResult.isVisible().catch(() => false)) {
-          await firstResult.click();
-          log("info", "Clicked first search result");
-          await page.waitForTimeout(2000);
-        } else {
-          log("info", "No results in search modal, closing");
-          const closeBtn = policyIframe.locator('#modalSearch button[data-dismiss="modal"], #modalSearch .close, #modalSearch .btn');
-          await closeBtn.first().click({ force: true }).catch(() => {});
-          await page.waitForTimeout(500);
-        }
+      if (!matched || !numericBranchCode) {
+        log("error", `[FIELD] UNKNOWN BANK: "${params.branchCode}" — no branch code found. Leaving #txt30 EMPTY.`);
+        diagnostics.branchCode = `UNKNOWN_BANK:${params.branchCode}`;
+        // Clear the field but don't type anything
+        await branchInput.click({ clickCount: 3 });
+        await branchInput.fill("");
+        await page.waitForTimeout(300);
       } else {
-        log("info", "No search modal appeared after Tab — branch code auto-resolved");
+        log("info", `[FIELD] Branch code: will type NUMERIC code "${numericBranchCode}" into #txt30 (bank="${params.branchCode}")`);
+
+        // Clear and type the NUMERIC branch code
+        await branchInput.click();
+        await page.waitForTimeout(300);
+        await branchInput.click({ clickCount: 3 });
+        await branchInput.fill(numericBranchCode);
+        await page.waitForTimeout(500);
+
+        // VERIFY before Tab — make sure the field actually has the numeric code
+        const preTabVal = await branchInput.inputValue().catch(() => "ERROR_READING");
+        log("info", `[VERIFY] Branch code BEFORE Tab: expected="${numericBranchCode}", actual="${preTabVal}"`);
+        if (preTabVal !== numericBranchCode) {
+          log("error", `[MISMATCH] Branch code field has "${preTabVal}" instead of "${numericBranchCode}"! Something overwrote it.`);
+        }
+
+        // Tab out to trigger the lookup/validation
+        await branchInput.press("Tab");
+        await page.waitForTimeout(3000);
+
+        // Check for #modalMessage (validation error) and handle
+        const modalMessage = policyIframe.locator('#modalMessage.modal.fade.in, #modalMessage.in');
+        if (await modalMessage.isVisible().catch(() => false)) {
+          const msgText = await policyIframe.locator('#modalMessage .modal-body, #modalMessage #lblMessage').textContent().catch(() => "") ?? "";
+          const trimmedMsg = msgText.trim().substring(0, 200);
+          log("warn", `[MODAL] Branch code validation modal: "${trimmedMsg}"`);
+
+          // Check if it's an "Invalid entry" error
+          if (trimmedMsg.toLowerCase().includes("invalid") || trimmedMsg.toLowerCase().includes("must be a numeric")) {
+            log("error", `[MODAL] VALIDATION ERROR on branch code! Message: "${trimmedMsg}". Code used: "${numericBranchCode}"`);
+            diagnostics.branchCode = `VALIDATION_ERROR:${trimmedMsg}`;
+          }
+
+          const msgCloseBtn = policyIframe.locator('#modalMessage .btn, #modalMessage button[data-dismiss="modal"]');
+          await msgCloseBtn.first().click({ force: true }).catch(() => {});
+          await page.waitForTimeout(1000);
+        }
+
+        // Check for #modalSearch (lookup results) — click first result to confirm
+        const modalSearch = policyIframe.locator("#modalSearch.modal.fade.in, #modalSearch.in");
+        if (await modalSearch.isVisible().catch(() => false)) {
+          log("info", "[MODAL] Branch code search modal appeared, selecting first result");
+
+          const firstResult = policyIframe.locator('#linkTable a, #linkTable tr[onclick], #linkTable td a, #linkTable tr td').first();
+          if (await firstResult.isVisible().catch(() => false)) {
+            await firstResult.click();
+            log("info", "[MODAL] Clicked first search result");
+            await page.waitForTimeout(2000);
+          } else {
+            log("warn", "[MODAL] No results in search modal, closing");
+            const closeBtn = policyIframe.locator('#modalSearch button[data-dismiss="modal"], #modalSearch .close, #modalSearch .btn');
+            await closeBtn.first().click({ force: true }).catch(() => {});
+            await page.waitForTimeout(500);
+          }
+        } else {
+          log("info", "[MODAL] No search modal appeared — branch code auto-resolved");
+        }
       }
 
-      // Verify the branch code was set by reading the description field
-      const branchDesc = await policyIframe.locator("#txtDesc30").inputValue().catch(() => "");
-      const branchVal = await branchInput.inputValue().catch(() => "");
-      log("info", `Branch code result: value="${branchVal}", description="${branchDesc}"`);
+      // FINAL VERIFICATION: Read both the code field and the description field
+      const finalBranchVal = await branchInput.inputValue().catch(() => "ERROR_READING");
+      const branchDesc = await policyIframe.locator("#txtDesc30").inputValue().catch(() => "ERROR_READING");
+      diagnostics.branchCodeFinal = finalBranchVal;
+      diagnostics.branchDesc = branchDesc;
+      log("info", `[VERIFY] Branch code FINAL: value="${finalBranchVal}", description="${branchDesc}"`);
 
-      if (!branchDesc) {
-        log("warn", `Branch code ${numericBranchCode} description is empty — may need manual check`);
+      if (!branchDesc || branchDesc === "ERROR_READING") {
+        log("warn", `[VERIFY] Branch code description is EMPTY — the branch code "${finalBranchVal}" may not have been accepted by MMX`);
       }
 
       // Dismiss any remaining modals
       const anyModal = policyIframe.locator('.modal.fade.in');
       if (await anyModal.first().isVisible().catch(() => false)) {
-        log("info", "Dismissing remaining modal after branch code");
+        log("info", "[MODAL] Dismissing remaining modal after branch code");
         await policyIframe.locator('.modal.fade.in .btn, .modal.fade.in button[data-dismiss="modal"]').first().click({ force: true }).catch(() => {});
         await page.waitForTimeout(500);
       }
@@ -425,140 +482,194 @@ export async function fillBankDetails(params: {
       fieldsSet.push("branchCode");
     }
 
-    // After branch code modal interactions, the Bank Details sub-tab may have lost focus.
-    // Re-click it to ensure all fields below are visible.
+    // Re-click Bank Details sub-tab to ensure visibility for remaining fields
     log("info", "Re-clicking Bank Details sub-tab to ensure visibility");
     await bankTab.click();
     await page.waitForTimeout(500);
 
-    // Collection day (#txt27 - SELECT)
+    // ==================== COLLECTION DAY (#txt27 - SELECT) ====================
     if (params.collectionDay) {
-      log("info", `Setting collection day: ${params.collectionDay}`);
+      log("info", `[FIELD] Collection day: setting #txt27 to "${params.collectionDay}"`);
       const daySelect = policyIframe.locator("#txt27");
+
+      // Log available options
+      const dayOptions = await daySelect.evaluate((el) => {
+        const select = el as HTMLSelectElement;
+        return Array.from(select.options).map(o => `${o.value}="${o.text}"`).join(", ");
+      }).catch(() => "ERROR_READING");
+      log("info", `[FIELD] Collection day available options: [${dayOptions}]`);
+
       try {
         await daySelect.selectOption({ label: params.collectionDay });
       } catch {
+        log("info", `[FIELD] Collection day: label match failed, trying value match`);
         await daySelect.selectOption(params.collectionDay);
       }
+
+      // VERIFY
+      const actualDay = await daySelect.evaluate((el) => (el as HTMLSelectElement).value).catch(() => "ERROR_READING");
+      diagnostics.collectionDay = actualDay;
+      log("info", `[VERIFY] Collection day: expected="${params.collectionDay}", actual="${actualDay}"`);
       fieldsSet.push("collectionDay");
     }
 
-    // Payment method / Account type (#txt28 - SELECT)
-    // Known options: Select(""), Current(1), Savings(2), Transmission(3), Cash(9), Invalid(0), Not specified(N)
-    // The param is the account type label (e.g., "Savings") from the sheet data
+    // ==================== ACCOUNT TYPE / PAYMENT METHOD (#txt28 - SELECT) ====================
     if (params.paymentMethod) {
+      log("info", `[FIELD] Account type: raw input = "${params.paymentMethod}"`);
+
       // Map account type labels to their numeric values
-      // Covers all common variations, abbreviations, and Afrikaans terms
       const accountTypeMap: Record<string, string> = {
         // Current account
-        "current": "1",
-        "current account": "1",
-        "cheque": "1",
-        "cheque account": "1",
-        "check": "1",
-        "check account": "1",
-        "lopende": "1",
-        "lopende rekening": "1",
-        "1": "1",
-
+        "current": "1", "current account": "1", "cheque": "1", "cheque account": "1",
+        "check": "1", "check account": "1", "lopende": "1", "lopende rekening": "1", "1": "1",
         // Savings account
-        "savings": "2",
-        "savings account": "2",
-        "saving": "2",
-        "save": "2",
-        "spaar": "2",
-        "spaarrekening": "2",
-        "2": "2",
-
+        "savings": "2", "savings account": "2", "saving": "2", "save": "2",
+        "spaar": "2", "spaarrekening": "2", "2": "2",
         // Transmission account
-        "transmission": "3",
-        "transmission account": "3",
-        "3": "3",
-
+        "transmission": "3", "transmission account": "3", "3": "3",
         // Cash
-        "cash": "9",
-        "9": "9",
-
+        "cash": "9", "9": "9",
         // Invalid
-        "invalid": "0",
-        "0": "0",
-
+        "invalid": "0", "0": "0",
         // Not specified
-        "not specified": "N",
-        "n/a": "N",
-        "na": "N",
-        "none": "N",
-        "n": "N",
-        "": "N",
+        "not specified": "N", "n/a": "N", "na": "N", "none": "N", "n": "N", "": "N",
       };
 
       const pmLower = params.paymentMethod.toLowerCase().trim();
       const pmValue = accountTypeMap[pmLower];
       if (!pmValue) {
-        log("warn", `Unknown account type "${params.paymentMethod}" — defaulting to Savings (2). Add this value to accountTypeMap if needed.`);
+        log("warn", `[FIELD] Account type: UNKNOWN input "${params.paymentMethod}" (lowercase="${pmLower}") — defaulting to Savings (2)`);
+      } else {
+        log("info", `[FIELD] Account type: "${params.paymentMethod}" -> mapped value="${pmValue}"`);
       }
       const finalPmValue = pmValue || "2"; // Default to Savings if unknown
-      log("info", `Setting account type: "${params.paymentMethod}" → value=${finalPmValue}`);
+      diagnostics.accountTypeInput = params.paymentMethod;
+      diagnostics.accountTypeMapped = finalPmValue;
 
-      // Re-click Bank Details tab to ensure the select is fully visible & interactive
+      // Re-click Bank Details tab to ensure the select is visible
       await bankTab.click();
       await page.waitForTimeout(500);
 
       const methodSelect = policyIframe.locator("#txt28");
 
-      // IMPORTANT: The #txt28 onchange handler runs `doValidation(28); runAfterSub(this);`
-      // which triggers CDV validation that RESETS the value within ~100ms.
-      // The xonblur="CDV" also resets on blur.
-      //
-      // Solution: Set the value via JS WITHOUT triggering change/blur events.
-      // The ASP.NET form submission reads the DOM selectedIndex directly on File click.
+      // Log available options BEFORE attempting to set
+      const availableOptions = await methodSelect.evaluate((el) => {
+        const select = el as HTMLSelectElement;
+        return Array.from(select.options).map(o => `value="${o.value}" text="${o.text}" selected=${o.selected}`).join(" | ");
+      }).catch(() => "ERROR_READING");
+      log("info", `[FIELD] Account type #txt28 available options: [${availableOptions}]`);
+
+      const currentValBefore = await methodSelect.evaluate((el) => (el as HTMLSelectElement).value).catch(() => "ERROR_READING");
+      log("info", `[FIELD] Account type #txt28 current value BEFORE set: "${currentValBefore}"`);
+
+      // Set the value via JS WITHOUT triggering change/blur events (CDV validation resets it)
       await methodSelect.evaluate((el, val) => {
         const select = el as HTMLSelectElement;
-        // Remove the onchange handler temporarily
-        const origOnChange = select.onchange;
+        // Remove ALL event handlers that might reset the value
         select.onchange = null;
-        // Set the value
+        select.onblur = null;
+        select.removeAttribute("onchange");
+        select.removeAttribute("xonblur");
+        select.removeAttribute("onblur");
+
+        // Try to find and select the matching option
+        let found = false;
         for (let i = 0; i < select.options.length; i++) {
           if (select.options[i].value === val) {
             select.selectedIndex = i;
             select.options[i].selected = true;
+            found = true;
             break;
           }
         }
-        // Do NOT restore onchange - let it stay null so File picks up our value
-        // Do NOT dispatch any events that would trigger validation
-      }, finalPmValue);
+
+        if (!found) {
+          // Try matching by text content
+          for (let i = 0; i < select.options.length; i++) {
+            if (select.options[i].text.trim().toLowerCase().includes(val.toLowerCase())) {
+              select.selectedIndex = i;
+              select.options[i].selected = true;
+              found = true;
+              break;
+            }
+          }
+        }
+
+        // Return diagnostic info
+        return {
+          found,
+          selectedIndex: select.selectedIndex,
+          selectedValue: select.value,
+          selectedText: select.options[select.selectedIndex]?.text || "N/A",
+        };
+      }, finalPmValue).then((result) => {
+        log("info", `[FIELD] Account type JS evaluate result: ${JSON.stringify(result)}`);
+      }).catch((err) => {
+        log("error", `[FIELD] Account type JS evaluate FAILED: ${err}`);
+      });
+
       await page.waitForTimeout(300);
 
-      // Verify
-      const currentVal = await methodSelect.evaluate((el) => (el as HTMLSelectElement).value).catch(() => "");
-      log("info", `Account type value after setting: "${currentVal}"`);
-      if (currentVal !== finalPmValue) {
-        log("info", `Account type mismatch: expected "${finalPmValue}", got "${currentVal}". Retrying...`);
-        // Second attempt - also try removing the xonblur CDV attribute
+      // VERIFY after set
+      const afterSetVal = await methodSelect.evaluate((el) => {
+        const s = el as HTMLSelectElement;
+        return { value: s.value, selectedIndex: s.selectedIndex, text: s.options[s.selectedIndex]?.text || "N/A" };
+      }).catch(() => ({ value: "ERROR", selectedIndex: -1, text: "ERROR" }));
+      diagnostics.accountTypeAfterSet = JSON.stringify(afterSetVal);
+      log("info", `[VERIFY] Account type AFTER set: value="${afterSetVal.value}", index=${afterSetVal.selectedIndex}, text="${afterSetVal.text}"`);
+
+      if (afterSetVal.value !== finalPmValue) {
+        log("warn", `[MISMATCH] Account type: expected="${finalPmValue}", got="${afterSetVal.value}". Retrying with force...`);
+
+        // Second attempt — also try via selectedIndex directly
         await methodSelect.evaluate((el, val) => {
           const select = el as HTMLSelectElement;
           select.onchange = null;
-          select.removeAttribute("xonblur");
+          select.onblur = null;
           select.removeAttribute("onchange");
+          select.removeAttribute("xonblur");
+          select.removeAttribute("onblur");
+
+          // Force by value
           select.value = val;
+
+          // Also force by iterating options
+          for (let i = 0; i < select.options.length; i++) {
+            if (select.options[i].value === val) {
+              select.selectedIndex = i;
+              break;
+            }
+          }
         }, finalPmValue);
-        await page.waitForTimeout(200);
-        const retryVal = await methodSelect.evaluate((el) => (el as HTMLSelectElement).value).catch(() => "");
-        log("info", `Account type value after retry: "${retryVal}"`);
+        await page.waitForTimeout(300);
+
+        // VERIFY again
+        const retryVal = await methodSelect.evaluate((el) => (el as HTMLSelectElement).value).catch(() => "ERROR");
+        diagnostics.accountTypeAfterRetry = retryVal;
+        log("info", `[VERIFY] Account type AFTER retry: value="${retryVal}"`);
+
+        if (retryVal !== finalPmValue) {
+          log("error", `[FAILED] Account type could not be set! Expected="${finalPmValue}", got="${retryVal}". The field may be locked or options don't include value "${finalPmValue}".`);
+        }
       }
+
       fieldsSet.push("paymentMethod/accountType");
     }
 
-    log("info", `Bank details filled: ${fieldsSet.join(", ")}`);
+    log("info", `==== BANK DETAILS COMPLETE ====`);
+    log("info", `Fields set: ${fieldsSet.join(", ")}`);
+    log("info", `Diagnostics: ${JSON.stringify(diagnostics)}`);
     return {
       success: true,
       message: `Bank details filled. Fields set: ${fieldsSet.join(", ")}`,
-      data: { fieldsSet },
+      data: { fieldsSet, diagnostics },
     };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
+    log("error", `==== BANK DETAILS FAILED ====`);
     log("error", `Bank details error: ${msg}`);
-    return { success: false, message: `Bank details error: ${msg}`, data: { fieldsSet } };
+    log("error", `Fields set before error: ${fieldsSet.join(", ")}`);
+    log("error", `Diagnostics at failure: ${JSON.stringify(diagnostics)}`);
+    return { success: false, message: `Bank details error: ${msg}`, data: { fieldsSet, diagnostics } };
   }
 }
