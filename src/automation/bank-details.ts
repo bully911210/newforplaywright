@@ -143,29 +143,133 @@ const BANK_BRANCH_CODES: Record<string, string> = {
 };
 
 /**
+ * Levenshtein distance between two strings (edit distance).
+ * Used for fuzzy matching bank names with typos.
+ */
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * Core bank keywords for deduplication during fuzzy matching.
+ * We only fuzzy-match against the shortest/canonical name for each bank
+ * to avoid false positives (e.g., "standard bank" fuzzy-matching "standard chartered").
+ */
+const CANONICAL_BANK_NAMES: Array<{ name: string; code: string }> = [
+  { name: "absa", code: "632005" },
+  { name: "absa bank", code: "632005" },
+  { name: "capitec", code: "470010" },
+  { name: "capitec bank", code: "470010" },
+  { name: "fnb", code: "250655" },
+  { name: "first national bank", code: "250655" },
+  { name: "nedbank", code: "198765" },
+  { name: "standard bank", code: "051001" },
+  { name: "sbsa", code: "051001" },
+  { name: "investec", code: "580105" },
+  { name: "african bank", code: "430000" },
+  { name: "tymebank", code: "678910" },
+  { name: "tyme bank", code: "678910" },
+  { name: "discovery bank", code: "679000" },
+  { name: "bank zero", code: "888000" },
+  { name: "bidvest bank", code: "462005" },
+  { name: "grindrod bank", code: "223626" },
+  { name: "sasfin bank", code: "683000" },
+  { name: "mercantile bank", code: "450905" },
+  { name: "old mutual", code: "462005" },
+  { name: "postbank", code: "460005" },
+  { name: "ubank", code: "431010" },
+  { name: "access bank", code: "410506" },
+  { name: "albaraka bank", code: "800000" },
+  { name: "hbz bank", code: "570100" },
+  { name: "hsbc", code: "587000" },
+  { name: "jpmorgan", code: "432000" },
+  { name: "citibank", code: "350005" },
+  { name: "bank of china", code: "686000" },
+  { name: "standard chartered", code: "730020" },
+];
+
+/**
  * Look up the universal branch code for a given bank name.
- * Falls back to the raw input if no match is found (in case a numeric code was passed directly).
+ * Uses multiple strategies:
+ *   1. Exact match (case-insensitive)
+ *   2. Already a numeric branch code → pass through
+ *   3. Substring/contains match
+ *   4. Levenshtein fuzzy match (catches typos like "Capitek", "Standar Bank", "Nedbenk")
+ * Falls back to the raw input if nothing matches.
  */
 function lookupBranchCode(bankName: string): { code: string; matched: boolean } {
   const normalized = bankName.toLowerCase().trim();
 
-  // Direct lookup
+  // Strategy 1: Direct exact lookup
   if (BANK_BRANCH_CODES[normalized]) {
     return { code: BANK_BRANCH_CODES[normalized], matched: true };
   }
 
-  // If the input is already a numeric branch code (5-6 digits), use it directly
+  // Strategy 2: Already a numeric branch code (5-6 digits), use directly
   if (/^\d{5,6}$/.test(normalized)) {
     return { code: normalized, matched: true };
   }
 
-  // Fuzzy matching: check if input contains any known bank keyword
+  // Strategy 3: Substring/contains match (e.g., "Standard Bank Ltd." contains "standard bank")
   for (const [key, code] of Object.entries(BANK_BRANCH_CODES)) {
     if (normalized.includes(key) || key.includes(normalized)) {
       return { code, matched: true };
     }
   }
 
+  // Strategy 4: Strip common suffixes and try again
+  const stripped = normalized
+    .replace(/\b(bank|limited|ltd|of south africa|of sa|sa|group|pty)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (stripped && BANK_BRANCH_CODES[stripped]) {
+    return { code: BANK_BRANCH_CODES[stripped], matched: true };
+  }
+  for (const [key, code] of Object.entries(BANK_BRANCH_CODES)) {
+    if (stripped && (stripped.includes(key) || key.includes(stripped))) {
+      return { code, matched: true };
+    }
+  }
+
+  // Strategy 5: Levenshtein fuzzy match against canonical names
+  // Allow up to 2 edits for short names, 3 for longer names
+  let bestMatch: { name: string; code: string; dist: number } | null = null;
+  for (const entry of CANONICAL_BANK_NAMES) {
+    const dist = levenshtein(normalized, entry.name);
+    const maxAllowed = entry.name.length <= 5 ? 1 : entry.name.length <= 10 ? 2 : 3;
+    if (dist <= maxAllowed && (!bestMatch || dist < bestMatch.dist)) {
+      bestMatch = { ...entry, dist };
+    }
+  }
+
+  // Also fuzzy-match the stripped version
+  if (stripped && stripped !== normalized) {
+    for (const entry of CANONICAL_BANK_NAMES) {
+      const dist = levenshtein(stripped, entry.name);
+      const maxAllowed = entry.name.length <= 5 ? 1 : entry.name.length <= 10 ? 2 : 3;
+      if (dist <= maxAllowed && (!bestMatch || dist < bestMatch.dist)) {
+        bestMatch = { ...entry, dist };
+      }
+    }
+  }
+
+  if (bestMatch) {
+    log("info", `Fuzzy matched bank "${bankName}" → "${bestMatch.name}" (distance=${bestMatch.dist})`);
+    return { code: bestMatch.code, matched: true };
+  }
+
+  log("warn", `No branch code mapping found for bank "${bankName}" — passing raw value`);
   return { code: bankName, matched: false };
 }
 
