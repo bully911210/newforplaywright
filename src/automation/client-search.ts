@@ -30,11 +30,41 @@ export async function fillClientSearch(
     const frameUrl = contentFrame.url();
     log("info", `Content frame URL: ${frameUrl}`);
 
-    // Step 0: Check for modal dialog - if present, session is expired
+    // Step 0: Dismiss any popup/overlay that might be blocking the page
+    log("info", "Dismissing any popups/overlays before interacting");
+    try {
+      // Check for Bootstrap modal inside contentframe
+      const modal = contentFrame.locator('.modal.fade.in, .modal.show, [class*="modal"][style*="display: block"]');
+      if (await modal.first().isVisible({ timeout: 1500 }).catch(() => false)) {
+        log("info", "Modal detected in contentframe, dismissing...");
+        // Try close/OK button
+        const closeBtn = contentFrame.locator('.modal .btn, .modal .close, .modal .btn-primary, .modal .btn-default');
+        if (await closeBtn.first().isVisible().catch(() => false)) {
+          await closeBtn.first().click({ force: true });
+          log("info", "Dismissed modal via button");
+          await page.waitForTimeout(1000);
+        } else {
+          await page.keyboard.press("Escape");
+          log("info", "Dismissed modal via Escape");
+          await page.waitForTimeout(1000);
+        }
+      }
+      // Also check main page for overlays
+      const mainModal = page.locator('.modal.fade.in, .modal.show, [class*="popup"], [class*="overlay"]');
+      if (await mainModal.first().isVisible({ timeout: 500 }).catch(() => false)) {
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(500);
+        log("info", "Dismissed main page overlay via Escape");
+      }
+    } catch {
+      // No modal, continue
+    }
+
+    // Step 0b: Check for session expiry modal specifically
     log("info", "Checking for session expiry modal");
     try {
-      const modal = contentFrame.locator('#modalMessage.modal.fade.in, .modal.fade.in');
-      if (await modal.isVisible({ timeout: 2000 }).catch(() => false)) {
+      const sessionModal = contentFrame.locator('#modalMessage.modal.fade.in');
+      if (await sessionModal.isVisible({ timeout: 1000 }).catch(() => false)) {
         return {
           success: false,
           message: "Session expired (modal popup detected). Please run login_mmx first.",
@@ -44,21 +74,87 @@ export async function fillClientSearch(
       // No modal, continue
     }
 
-    // Step 1: Click "New" tab
+    // Step 1: Click "New" tab and VERIFY the tab content actually switched.
+    // The tab uses jQuery UI tabs or Bootstrap tabs. Using force:true can change
+    // the visual state without triggering the JS event handler that swaps panels.
+    // We need to click WITHOUT force, or use JS to trigger the tab switch.
     log("info", "Clicking 'New' tab");
     const newTab = contentFrame.locator('a[href="#tabsNew"]').first();
     await newTab.waitFor({ state: "visible", timeout: config.actionTimeout });
-    await newTab.click({ force: true });
-    await page.waitForTimeout(1000);
 
-    // Step 2: Select client type radio button
-    // Domestic: #rblDomesticCommercial_0 (value="DOM")
-    // Commercial: #rblDomesticCommercial_1 (value="COM")
-    log("info", `Selecting client type: ${clientType}`);
+    // First attempt: normal click (triggers JS event handlers properly)
+    await newTab.click();
+    await page.waitForTimeout(1500);
+
+    // Verify the "New" tab panel is actually showing by checking if the radio button is visible
     const radioId = clientType === "Domestic"
       ? "#rblDomesticCommercial_0"
       : "#rblDomesticCommercial_1";
+    let radioVisible = await contentFrame.locator(radioId).isVisible().catch(() => false);
 
+    if (!radioVisible) {
+      log("warn", "New tab content not showing after click, trying JS tab activation");
+      // Use JavaScript to activate the tab panel directly
+      await contentFrame.evaluate(() => {
+        // Hide all tab panels
+        const allPanels = document.querySelectorAll('.tab-pane, [id^="tabs"]');
+        allPanels.forEach(p => {
+          (p as HTMLElement).style.display = 'none';
+          p.classList.remove('active', 'in');
+        });
+        // Show the New tab panel
+        const newPanel = document.getElementById('tabsNew');
+        if (newPanel) {
+          newPanel.style.display = 'block';
+          newPanel.classList.add('active', 'in');
+        }
+        // Also try jQuery if available
+        try {
+          (window as any).$('a[href="#tabsNew"]').tab('show');
+        } catch {}
+        try {
+          (window as any).$('#tabsNew').show();
+        } catch {}
+      });
+      await page.waitForTimeout(1500);
+      radioVisible = await contentFrame.locator(radioId).isVisible().catch(() => false);
+    }
+
+    if (!radioVisible) {
+      log("warn", "Still not visible after JS activation, trying second click approach");
+      // Try clicking the tab link text directly
+      await contentFrame.locator('text=New').first().click();
+      await page.waitForTimeout(1500);
+      radioVisible = await contentFrame.locator(radioId).isVisible().catch(() => false);
+    }
+
+    if (!radioVisible) {
+      log("warn", "Third attempt: clicking tab with dispatchEvent");
+      await contentFrame.evaluate(() => {
+        const tabLink = document.querySelector('a[href="#tabsNew"]');
+        if (tabLink) {
+          tabLink.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }
+      });
+      await page.waitForTimeout(2000);
+      radioVisible = await contentFrame.locator(radioId).isVisible().catch(() => false);
+    }
+
+    if (!radioVisible) {
+      // Take a diagnostic screenshot before failing
+      log("error", "New tab panel never became visible after all attempts");
+      const html = await contentFrame.content().catch(() => "N/A");
+      const hasTabsNew = html.includes('tabsNew');
+      const hasRadio = html.includes('rblDomesticCommercial_0');
+      log("error", `DOM check: tabsNew exists=${hasTabsNew}, radio exists=${hasRadio}`);
+      return {
+        success: false,
+        message: "New tab content panel did not become visible. The radio buttons are hidden.",
+      };
+    }
+
+    // Step 2: Select client type radio button
+    log("info", `Selecting client type: ${clientType}`);
     await contentFrame.click(radioId);
 
     // Step 3: Wait for product dropdown to populate after radio selection

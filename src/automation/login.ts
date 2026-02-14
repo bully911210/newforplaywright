@@ -11,55 +11,80 @@ import type { Page } from "playwright";
  */
 async function dismissPostLoginPopup(page: Page): Promise<void> {
   try {
-    await page.waitForTimeout(1500);
+    // Wait for post-login page to settle — popups appear after a brief delay
+    await page.waitForTimeout(2000);
 
+    // Strategy 1: Press Escape universally — this dismisses most modals/popups
+    log("info", "Pressing Escape to dismiss any post-login popup");
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(500);
+
+    // Strategy 2: Check contentframe for Bootstrap modals
     const contentFrame = page.frame({ name: "contentframe" });
-    if (!contentFrame) return;
+    if (contentFrame) {
+      const modal = contentFrame.locator('.modal.fade.in, .modal.show, [class*="modal"][style*="display: block"]');
+      if (await modal.first().isVisible().catch(() => false)) {
+        log("info", "Post-login modal detected in contentframe");
 
-    // Strategy 1: Check for any visible modal inside contentframe and dismiss it
-    const modal = contentFrame.locator('.modal.fade.in, .modal.show, [class*="modal"][style*="display: block"]');
-    if (await modal.first().isVisible().catch(() => false)) {
-      log("info", "Post-login popup detected, dismissing...");
+        // Try clicking any button inside the modal (OK, Close, etc.)
+        const modalBtn = contentFrame.locator('.modal .btn, .modal .close, .modal .btn-primary, .modal .btn-default, .modal .btn-secondary');
+        if (await modalBtn.first().isVisible().catch(() => false)) {
+          await modalBtn.first().click({ force: true });
+          log("info", "Dismissed modal via button click");
+          await page.waitForTimeout(1000);
+        } else {
+          // Click the backdrop
+          await page.keyboard.press("Escape");
+          await page.waitForTimeout(500);
+          log("info", "Dismissed modal via Escape");
+        }
 
-      // Try clicking the close/OK button first
-      const closeBtn = contentFrame.locator('.modal.fade.in .btn, .modal.fade.in .close, .modal.show .btn, .modal.show .close');
-      if (await closeBtn.first().isVisible().catch(() => false)) {
-        await closeBtn.first().click({ force: true });
-        log("info", "Dismissed popup via close/OK button");
-        await page.waitForTimeout(1000);
-        return;
+        // Double-check it's gone
+        if (await modal.first().isVisible().catch(() => false)) {
+          // Force-remove via JS
+          await contentFrame.evaluate(() => {
+            document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
+            document.querySelectorAll('.modal.fade.in, .modal.show').forEach(el => {
+              (el as HTMLElement).style.display = 'none';
+              el.classList.remove('in', 'show');
+            });
+            document.body.classList.remove('modal-open');
+            document.body.style.overflow = '';
+            document.body.style.paddingRight = '';
+          });
+          log("info", "Force-removed modal via JS");
+          await page.waitForTimeout(500);
+        }
       }
-
-      // Try clicking outside the modal (on the backdrop)
-      const backdrop = contentFrame.locator('.modal-backdrop');
-      if (await backdrop.isVisible().catch(() => false)) {
-        await backdrop.click({ force: true, position: { x: 10, y: 10 } });
-        log("info", "Dismissed popup by clicking backdrop");
-        await page.waitForTimeout(1000);
-        return;
-      }
-
-      // Last resort: press Escape
-      await page.keyboard.press("Escape");
-      log("info", "Dismissed popup via Escape key");
-      await page.waitForTimeout(1000);
-      return;
     }
 
-    // Strategy 2: Check for any overlay/popup on the main page (outside frames)
+    // Strategy 3: Check main page for overlays/popups
     const mainModal = page.locator('.modal.fade.in, .modal.show, [class*="popup"], [class*="overlay"]');
     if (await mainModal.first().isVisible().catch(() => false)) {
-      log("info", "Post-login popup detected on main page, pressing Escape");
+      log("info", "Post-login popup detected on main page");
       await page.keyboard.press("Escape");
-      await page.waitForTimeout(1000);
-      return;
+      await page.waitForTimeout(500);
+
+      // Force-remove if still there
+      if (await mainModal.first().isVisible().catch(() => false)) {
+        await page.evaluate(() => {
+          document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
+          document.querySelectorAll('.modal.fade.in, .modal.show').forEach(el => {
+            (el as HTMLElement).style.display = 'none';
+            el.classList.remove('in', 'show');
+          });
+          document.body.classList.remove('modal-open');
+          document.body.style.overflow = '';
+        });
+        log("info", "Force-removed main page modal via JS");
+      }
     }
 
-    // Strategy 3: Click on the page body to dismiss any floating popup
+    // Strategy 4: Click on the page body to dismiss any floating popup
     // The user said "click anywhere but on the popup to make it disappear"
     await page.mouse.click(100, 100);
     await page.waitForTimeout(500);
-    log("info", "Clicked page body to dismiss any floating popup");
+    log("info", "Clicked page body (100,100) to dismiss any floating popup");
   } catch (err) {
     log("warn", `Post-login popup dismiss failed (non-critical): ${err}`);
   }
