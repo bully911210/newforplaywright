@@ -448,18 +448,57 @@ export async function fillBankDetails(params: {
     // The param is the account type label (e.g., "Savings") from the sheet data
     if (params.paymentMethod) {
       // Map account type labels to their numeric values
+      // Covers all common variations, abbreviations, and Afrikaans terms
       const accountTypeMap: Record<string, string> = {
+        // Current account
         "current": "1",
+        "current account": "1",
+        "cheque": "1",
+        "cheque account": "1",
+        "check": "1",
+        "check account": "1",
+        "lopende": "1",
+        "lopende rekening": "1",
+        "1": "1",
+
+        // Savings account
         "savings": "2",
+        "savings account": "2",
+        "saving": "2",
+        "save": "2",
+        "spaar": "2",
+        "spaarrekening": "2",
+        "2": "2",
+
+        // Transmission account
         "transmission": "3",
+        "transmission account": "3",
+        "3": "3",
+
+        // Cash
         "cash": "9",
+        "9": "9",
+
+        // Invalid
         "invalid": "0",
+        "0": "0",
+
+        // Not specified
         "not specified": "N",
+        "n/a": "N",
+        "na": "N",
+        "none": "N",
+        "n": "N",
+        "": "N",
       };
 
       const pmLower = params.paymentMethod.toLowerCase().trim();
-      const pmValue = accountTypeMap[pmLower] || params.paymentMethod;
-      log("info", `Setting account type: ${params.paymentMethod} (value=${pmValue})`);
+      const pmValue = accountTypeMap[pmLower];
+      if (!pmValue) {
+        log("warn", `Unknown account type "${params.paymentMethod}" — defaulting to Savings (2). Add this value to accountTypeMap if needed.`);
+      }
+      const finalPmValue = pmValue || "2"; // Default to Savings if unknown
+      log("info", `Setting account type: "${params.paymentMethod}" → value=${finalPmValue}`);
 
       // Re-click Bank Details tab to ensure the select is fully visible & interactive
       await bankTab.click();
@@ -488,14 +527,14 @@ export async function fillBankDetails(params: {
         }
         // Do NOT restore onchange - let it stay null so File picks up our value
         // Do NOT dispatch any events that would trigger validation
-      }, pmValue);
+      }, finalPmValue);
       await page.waitForTimeout(300);
 
       // Verify
       const currentVal = await methodSelect.evaluate((el) => (el as HTMLSelectElement).value).catch(() => "");
       log("info", `Account type value after setting: "${currentVal}"`);
-      if (currentVal !== pmValue) {
-        log("info", `Account type mismatch: expected "${pmValue}", got "${currentVal}". Retrying...`);
+      if (currentVal !== finalPmValue) {
+        log("info", `Account type mismatch: expected "${finalPmValue}", got "${currentVal}". Retrying...`);
         // Second attempt - also try removing the xonblur CDV attribute
         await methodSelect.evaluate((el, val) => {
           const select = el as HTMLSelectElement;
@@ -503,7 +542,7 @@ export async function fillBankDetails(params: {
           select.removeAttribute("xonblur");
           select.removeAttribute("onchange");
           select.value = val;
-        }, pmValue);
+        }, finalPmValue);
         await page.waitForTimeout(200);
         const retryVal = await methodSelect.evaluate((el) => (el as HTMLSelectElement).value).catch(() => "");
         log("info", `Account type value after retry: "${retryVal}"`);
