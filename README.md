@@ -60,15 +60,11 @@ mmx-mcp-server/
 │   │   ├── logger.ts             # Logger with EventEmitter for dashboard
 │   │   └── retry.ts              # Generic retry wrapper
 │   │
-│   └── workflows/
-│       └── workflow-runner.ts     # Pluggable workflow architecture
-│
 ├── code.gs                       # Google Apps Script (deploy to Sheets)
 ├── .env.example                  # Template for environment config
 ├── .gitignore
 ├── package.json
 ├── tsconfig.json
-├── start-poller.bat              # Windows shortcut to launch standalone
 └── README.md
 ```
 
@@ -129,10 +125,8 @@ npm run build
 ### Step 5: Run
 
 ```bash
-node build/standalone.js
+npm start
 ```
-
-Or on Windows, double-click `start-poller.bat`.
 
 The system will:
 - Start the monitoring dashboard at **http://localhost:3000**
@@ -212,7 +206,9 @@ This project also works as a [Model Context Protocol](https://modelcontextprotoc
 | `start_polling` | Start auto-polling |
 | `stop_polling` | Stop auto-polling |
 
-To use as MCP server: `node build/index.js` (communicates via stdio).
+To use as MCP server: `npm run mcp` (communicates via stdio).
+
+> **Important**: The MCP server does NOT auto-poll. Only the standalone poller (`npm start`) polls. This prevents duplicate processing when both are running.
 
 ---
 
@@ -226,11 +222,11 @@ To use as MCP server: `node build/index.js` (communicates via stdio).
 | `GOOGLE_SHEET_WEBAPP_URL` | — | Apps Script Web App URL |
 | `COLUMN_MAPPING` | (see .env.example) | JSON map of columns to fields |
 | `HEADLESS` | `false` | Run browser headless (no GUI) |
-| `USER_DATA_DIR` | `user-data-3` | Chromium profile directory |
+| `USER_DATA_DIR` | `user-data-6` | Chromium profile directory |
 | `NAVIGATION_TIMEOUT` | `30000` | Page navigation timeout (ms) |
 | `ACTION_TIMEOUT` | `10000` | Element action timeout (ms) |
 | `POLL_INTERVAL_MS` | `30000` | How often to check for new rows (ms) |
-| `AUTO_START_POLLING` | `true` | Start polling on launch |
+| `AUTO_START_POLLING` | `false` | MCP server auto-poll (keep `false`) |
 | `DASHBOARD_PORT` | `3000` | Dashboard HTTP port |
 
 ---
@@ -259,12 +255,20 @@ Dates must come through as DD/MM/YYYY. The `code.gs` script uses `getDisplayValu
 - Empty cells, "Uploaded", or error messages are all skipped
 - Check the dashboard at localhost:3000 for live logs
 
+### Multiple browser windows open (duplicate processing)
+
+This means multiple Node.js processes are all polling simultaneously. Fix:
+1. Open Task Manager and kill **all** `node.exe` processes (except Figma extensions)
+2. Kill all `chrome.exe` processes
+3. Restart with `npm start` — only run ONE instance at a time
+4. Never set `AUTO_START_POLLING=true` in `.env`
+
 ### Process hangs / browser stays open
 
 The browser is closed automatically after each row (success or failure). If it's stuck:
-1. Kill any `node` or `chromium` processes in Task Manager
+1. Kill any `node` or `chrome` processes in Task Manager
 2. Delete the `user-data-*` folder
-3. Restart with `node build/standalone.js`
+3. Restart with `npm start`
 
 ---
 
@@ -273,6 +277,22 @@ The browser is closed automatically after each row (success or failure). If it's
 ```bash
 npm run build    # Compile TypeScript → build/
 npm run dev      # Watch mode (recompile on save)
-npm run start    # Run MCP server (stdio mode)
-npm run poll     # Run standalone poller + dashboard
+npm start        # Run standalone poller + dashboard (MAIN ENTRY POINT)
+npm run mcp      # Run MCP server (stdio mode, for Claude/AI tools)
 ```
+
+---
+
+## Architecture: Single-Poller Design
+
+Only the **standalone poller** (`npm start` / `standalone.ts`) should ever poll and process rows. The MCP server (`npm run mcp` / `index.ts`) provides tools for manual control but **never auto-polls**.
+
+This prevents a critical issue where multiple processes could simultaneously process the same row, creating duplicate client entries in MMX (which triggers real debit orders).
+
+**Safeguards:**
+- `index.ts` has no auto-polling code — removed entirely
+- `.env` has `AUTO_START_POLLING=false` as a safety net
+- On startup, `killOrphanedChrome()` cleans up zombie Chrome processes from previous crashes
+- Before each browser launch, `killChromeForDir()` kills any Chrome using the same profile directory
+- Graceful shutdown (`SIGINT`/`SIGTERM`) closes all browsers
+- `uncaughtException` handler ensures browsers are cleaned up on crashes

@@ -74,6 +74,8 @@ export async function fillCoverTab(params: {
     await page.waitForTimeout(3000);
 
     // Check for modal message after click (dismiss if needed)
+    // If "CRITICAL INPUT" appears, it means the Policy tab wasn't loaded properly.
+    // We need to dismiss, re-click Policy tab, then retry the Cover tab flow.
     const postClickModal = coverIframe.locator("#modalMessage.in, #modalMessage.modal.fade.in");
     if (await postClickModal.isVisible().catch(() => false)) {
       const postText = (await coverIframe
@@ -81,8 +83,39 @@ export async function fillCoverTab(params: {
         .textContent()
         .catch(() => "")) ?? "";
       log("info", `Modal after Donation click: "${postText.trim().substring(0, 100)}"`);
+
+      const isCritical = postText.toUpperCase().includes("CRITICAL") || postText.toUpperCase().includes("LOAD THE POLICY");
       await coverIframe.locator('#modalMessage .btn').first().click({ force: true }).catch(() => {});
       await page.waitForTimeout(1000);
+
+      if (isCritical) {
+        // Re-click Policy tab to "load" it, then come back to Cover and retry
+        log("warn", "CRITICAL INPUT modal detected — re-loading Policy tab then retrying Cover");
+        const policyTabLink = contentFrame.locator('a[href="#tabsPolicy"]');
+        await policyTabLink.click().catch(() => {});
+        await page.waitForTimeout(2000);
+
+        // Now re-click Cover tab
+        log("info", "Re-clicking Cover tab after Policy reload");
+        await coverTabLink.click();
+        await page.waitForTimeout(3000);
+
+        // Re-click Donation row
+        log("info", "Re-clicking Donation row after CRITICAL INPUT recovery");
+        const donationTd2 = coverIframe.locator('td:has-text("Donation")').first();
+        await donationTd2.waitFor({ state: "visible", timeout: config.actionTimeout });
+        await donationTd2.click({ force: true });
+        await page.waitForTimeout(3000);
+
+        // Check for another modal — if CRITICAL again, give up
+        const retryModal = coverIframe.locator("#modalMessage.in, #modalMessage.modal.fade.in");
+        if (await retryModal.isVisible().catch(() => false)) {
+          const retryText = (await coverIframe.locator("#modalMessage").textContent().catch(() => "")) ?? "";
+          log("error", `CRITICAL INPUT persists after Policy reload: "${retryText.trim().substring(0, 100)}"`);
+          await coverIframe.locator('#modalMessage .btn').first().click({ force: true }).catch(() => {});
+          return { success: false, message: `Cover tab blocked after retry: "${retryText.trim()}"` };
+        }
+      }
     }
 
     // Wait for the Donation dialog to appear

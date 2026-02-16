@@ -1,24 +1,33 @@
+# ── Build output ─────────────────────────────────────────────────────
 node_modules/
 build/
+
+# ── Secrets ──────────────────────────────────────────────────────────
 .env
 
-# Browser profiles (persistent Chromium sessions)
+# ── Runtime data ─────────────────────────────────────────────────────
+# Persistent Chromium profiles (login sessions, cookies, lockfiles)
 user-data*/
 
-# Failure screenshots
+# Failure screenshots captured during automation
 screenshots/
 
-# Logs
+# ── Logs ─────────────────────────────────────────────────────────────
 *.log
 
-# Debug screenshots
+# ── Debug artifacts ──────────────────────────────────────────────────
 *.png
 
-# OS / Editor
+# ── OS / Editor ──────────────────────────────────────────────────────
 nul
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
 
-# Claude Code
+# ── Claude Code ──────────────────────────────────────────────────────
 .claude/
 .mcp.json

@@ -13,16 +13,15 @@ import { fillClientSearch } from "./automation/client-search.js";
 import { fillClientInfo } from "./automation/client-info.js";
 import { fillPolicyInfo } from "./automation/policy-info.js";
 import { fillBankDetails } from "./automation/bank-details.js";
-import { fileClientTab, filePolicyTab } from "./automation/file-tab.js";
 import { fillCoverTab } from "./automation/cover-tab.js";
 import { finalizeSubmission } from "./automation/finalize.js";
-import { closeBrowser } from "./automation/browser-manager.js";
-import { startPolling, stopPolling, isPolling } from "./automation/poll-sheet.js";
+import { closeAllBrowsers } from "./automation/browser-manager.js";
+import { startPolling, stopPolling } from "./automation/poll-sheet.js";
 import { processRow } from "./automation/process-row.js";
 
 const server = new McpServer({
   name: "mmx-systems",
-  version: "1.0.0",
+  version: "1.1.0",
 });
 
 // ─── Tool 1: fetch_client_data ───────────────────────────────────────────────
@@ -426,26 +425,28 @@ async function main() {
   await server.connect(transport);
   log("info", "MMX MCP Server running on stdio");
 
-  // Auto-start polling if configured
-  const config = getConfig();
-  if (config.autoStartPolling) {
-    log("info", "Auto-starting sheet polling (AUTO_START_POLLING=true)");
-    startPolling();
-  }
+  // NOTE: The MCP server does NOT auto-start polling.
+  // Polling is ONLY handled by standalone.ts to prevent multiple instances
+  // from processing rows simultaneously (which causes duplicate client entries).
+  // Use the start_polling / stop_polling MCP tools for manual control only.
 
-  // Graceful shutdown
-  process.on("SIGINT", async () => {
+  // Graceful shutdown — close ALL browser instances (default + workers w1-w5)
+  const shutdown = async () => {
     log("info", "Shutting down...");
     stopPolling();
-    await closeBrowser();
+    await closeAllBrowsers();
     process.exit(0);
-  });
+  };
 
-  process.on("SIGTERM", async () => {
-    log("info", "Shutting down...");
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+
+  // Last-resort cleanup for uncaught exceptions
+  process.on("uncaughtException", async (err) => {
+    log("error", `Uncaught exception: ${err.message}`);
     stopPolling();
-    await closeBrowser();
-    process.exit(0);
+    await closeAllBrowsers().catch(() => {});
+    process.exit(1);
   });
 }
 

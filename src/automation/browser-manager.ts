@@ -1,5 +1,6 @@
 import { chromium, type BrowserContext, type Page } from "playwright";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { execSync } from "node:child_process";
 import path from "path";
 import fs from "node:fs";
 import { getConfig } from "../config.js";
@@ -13,6 +14,10 @@ import { log } from "../utils/logger.js";
  * Worker context is tracked via AsyncLocalStorage so automation functions
  * (login, fillClientInfo, etc.) automatically use the correct browser instance
  * without needing workerId passed through every function call.
+ *
+ * ZOMBIE PREVENTION: On startup, killOrphanedChrome() is called to kill any
+ * Chrome processes left over from previous crashes. Before each browser launch,
+ * killChromeForDir() kills any Chrome processes using the same user-data directory.
  */
 
 const workerStorage = new AsyncLocalStorage<string>();
@@ -61,6 +66,133 @@ function cleanStaleLocks(userDataDir: string): void {
   }
 }
 
+/**
+ * Kill ALL Chrome/Chromium processes whose command line includes any user-data dir
+ * matching our configured base pattern. Called once on startup to clean up zombies
+ * from previous crashes.
+ *
+ * On Windows: uses `wmic` to find chrome.exe processes by command line.
+ * On Linux/Mac: uses `ps` + `grep`.
+ */
+export function killOrphanedChrome(): void {
+  const config = getConfig();
+  const baseDirName = path.basename(path.resolve(config.userDataDir));
+  // Match user-data-6, user-data-6-w1, user-data-6-fresh2, user-data-5, etc.
+  // We use the prefix without the trailing number to catch ALL our user-data dirs
+  const prefix = baseDirName.replace(/-\d+$/, "-"); // "user-data-" from "user-data-6"
+
+  if (process.platform === "win32") {
+    try {
+      // Find all chrome.exe processes with our user-data pattern in the command line
+      const output = execSync(
+        `wmic process where "name='chrome.exe' and commandline like '%${prefix}%'" get processid`,
+        { encoding: "utf-8", timeout: 10000 }
+      ).trim();
+
+      const pids = output
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^\d+$/.test(line));
+
+      if (pids.length > 0) {
+        log("warn", `🧹 ORPHAN CLEANUP: Found ${pids.length} zombie Chrome processes matching "${prefix}*"`);
+        for (const pid of pids) {
+          try {
+            execSync(`taskkill /F /PID ${pid}`, { encoding: "utf-8", timeout: 5000 });
+            log("info", `  Killed zombie Chrome PID ${pid}`);
+          } catch {
+            // Process may have already exited
+          }
+        }
+        // Wait a moment for processes to fully terminate and release lockfiles
+        execSync("timeout /t 2 /nobreak >nul 2>&1", { timeout: 5000 });
+      } else {
+        log("info", `🧹 ORPHAN CLEANUP: No zombie Chrome processes found for "${prefix}*"`);
+      }
+    } catch (err) {
+      log("warn", `Orphan Chrome cleanup failed (non-fatal): ${err}`);
+    }
+  } else {
+    // Linux/Mac fallback
+    try {
+      const output = execSync(
+        `ps aux | grep chrome | grep "${prefix}" | grep -v grep | awk '{print $2}'`,
+        { encoding: "utf-8", timeout: 10000 }
+      ).trim();
+
+      const pids = output.split("\n").filter((line) => /^\d+$/.test(line));
+      if (pids.length > 0) {
+        log("warn", `🧹 ORPHAN CLEANUP: Found ${pids.length} zombie Chrome processes`);
+        for (const pid of pids) {
+          try {
+            execSync(`kill -9 ${pid}`, { timeout: 5000 });
+            log("info", `  Killed zombie Chrome PID ${pid}`);
+          } catch {
+            // Process may have already exited
+          }
+        }
+      }
+    } catch {
+      // grep returns exit code 1 when no matches — that's fine
+    }
+  }
+}
+
+/**
+ * Kill Chrome processes that are using a SPECIFIC user-data directory.
+ * Called before each browser launch to ensure no zombie holds the lockfile.
+ */
+function killChromeForDir(userDataDir: string): void {
+  const dirName = path.basename(userDataDir);
+
+  if (process.platform === "win32") {
+    try {
+      const output = execSync(
+        `wmic process where "name='chrome.exe' and commandline like '%${dirName}%'" get processid`,
+        { encoding: "utf-8", timeout: 10000 }
+      ).trim();
+
+      const pids = output
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^\d+$/.test(line));
+
+      if (pids.length > 0) {
+        log("warn", `🔪 PRE-LAUNCH CLEANUP: Killing ${pids.length} Chrome processes using ${dirName}`);
+        for (const pid of pids) {
+          try {
+            execSync(`taskkill /F /PID ${pid}`, { encoding: "utf-8", timeout: 5000 });
+            log("info", `  Killed Chrome PID ${pid}`);
+          } catch {
+            // Already exited
+          }
+        }
+        // Brief pause for lockfile release
+        execSync("timeout /t 1 /nobreak >nul 2>&1", { timeout: 3000 });
+      }
+    } catch {
+      // wmic may fail if no chrome.exe exists — that's OK
+    }
+  } else {
+    try {
+      const output = execSync(
+        `ps aux | grep chrome | grep "${dirName}" | grep -v grep | awk '{print $2}'`,
+        { encoding: "utf-8", timeout: 10000 }
+      ).trim();
+
+      const pids = output.split("\n").filter((line) => /^\d+$/.test(line));
+      if (pids.length > 0) {
+        log("warn", `🔪 PRE-LAUNCH CLEANUP: Killing ${pids.length} Chrome processes using ${dirName}`);
+        for (const pid of pids) {
+          try { execSync(`kill -9 ${pid}`, { timeout: 5000 }); } catch { /* already exited */ }
+        }
+      }
+    } catch {
+      // No matches — fine
+    }
+  }
+}
+
 export async function getBrowserContext(workerId?: string): Promise<BrowserContext> {
   const key = getWorkerKey(workerId);
   const existing = instances.get(key);
@@ -69,6 +201,8 @@ export async function getBrowserContext(workerId?: string): Promise<BrowserConte
   const config = getConfig();
   const userDataDir = getUserDataDir(workerId);
 
+  // Kill any zombie Chrome processes holding this user-data dir's lockfile
+  killChromeForDir(userDataDir);
   cleanStaleLocks(userDataDir);
 
   for (let attempt = 1; attempt <= MAX_LAUNCH_RETRIES; attempt++) {
@@ -121,11 +255,17 @@ async function resetCorruptProfile(
   config: ReturnType<typeof getConfig>,
   key: string
 ): Promise<BrowserContext | null> {
+  // Strategy: try renaming the corrupt dir first. If that fails (Windows EBUSY lockfile),
+  // try successive fresh directories (user-data-4-fresh1, user-data-4-fresh2, etc.)
+  // This guarantees we ALWAYS get a working browser eventually.
+
+  // Attempt 1: Try to rename the corrupted dir (works if lockfile isn't held)
   try {
     const corruptDir = `${userDataDir}-corrupt-${Date.now()}`;
-    log("warn", `[${key}] Renaming corrupted profile to: ${corruptDir}`);
+    log("warn", `[${key}] Attempting to rename corrupted profile to: ${corruptDir}`);
     if (fs.existsSync(userDataDir)) {
       fs.renameSync(userDataDir, corruptDir);
+      log("info", `[${key}] Successfully renamed corrupted profile`);
     }
 
     const ctx = await chromium.launchPersistentContext(userDataDir, {
@@ -143,12 +283,51 @@ async function resetCorruptProfile(
       log("info", `[${key}] Browser context closed`);
     });
 
-    log("info", `[${key}] Browser launched after profile reset`);
+    log("info", `[${key}] Browser launched after profile rename`);
     return ctx;
-  } catch (resetErr) {
-    log("error", `[${key}] Profile reset also failed: ${resetErr}`);
-    return null;
+  } catch (renameErr) {
+    log("warn", `[${key}] Rename/launch failed (likely EBUSY lockfile): ${renameErr}`);
   }
+
+  // Attempt 2: Try fresh numbered directories — this ALWAYS works because the dir is new
+  for (let i = 1; i <= 10; i++) {
+    const freshDir = `${userDataDir}-fresh${i}`;
+    try {
+      // Skip directories that already have lockfiles (also corrupted)
+      const lockPath = path.join(freshDir, "lockfile");
+      if (fs.existsSync(lockPath)) {
+        log("info", `[${key}] Skipping ${freshDir} — lockfile exists`);
+        continue;
+      }
+
+      log("info", `[${key}] Trying fresh profile directory: ${freshDir}`);
+      cleanStaleLocks(freshDir);
+
+      const ctx = await chromium.launchPersistentContext(freshDir, {
+        headless: config.headless,
+        viewport: { width: 1366, height: 768 },
+        args: [
+          "--disable-blink-features=AutomationControlled",
+          "--no-sandbox",
+          "--disable-gpu",
+        ],
+      });
+
+      ctx.on("close", () => {
+        instances.delete(key);
+        log("info", `[${key}] Browser context closed`);
+      });
+
+      log("info", `[${key}] ✅ Browser launched with fresh profile: ${freshDir}`);
+      return ctx;
+    } catch (freshErr) {
+      log("warn", `[${key}] Fresh dir ${freshDir} also failed: ${freshErr}`);
+      cleanStaleLocks(freshDir);
+    }
+  }
+
+  log("error", `[${key}] ALL profile reset attempts exhausted (rename + 10 fresh dirs)`);
+  return null;
 }
 
 export async function getPage(workerId?: string): Promise<Page> {

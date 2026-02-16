@@ -1,22 +1,29 @@
 {
   "name": "mmx-mcp-server",
-  "version": "1.0.0",
-  "description": "MCP server for automating MMX Systems form filling with Google Sheets data",
+  "version": "1.1.0",
+  "description": "Automated NPC donation uploads to MMX Systems from Google Sheets — with MCP tools, standalone poller, and real-time dashboard.",
+  "author": "Baden Gillies",
+  "license": "UNLICENSED",
+  "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "bin": {
     "mmx-mcp": "./build/index.js"
   },
   "scripts": {
     "build": "tsc && node -e \"const fs=require('fs'),p=require('path');const d=p.join('build','dashboard');fs.mkdirSync(d,{recursive:true});fs.copyFileSync(p.join('src','dashboard','dashboard.html'),p.join(d,'dashboard.html'));console.log('Copied dashboard.html to build/dashboard/')\"",
     "dev": "tsc --watch",
-    "start": "node build/index.js",
-    "poll": "node build/standalone.js"
+    "start": "node build/standalone.js",
+    "mcp": "node build/index.js",
+    "postinstall": "npx playwright install chromium"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
+    "dotenv": "^16.4.0",
     "playwright": "^1.50.0",
-    "zod": "^3.25.0",
-    "dotenv": "^16.4.0"
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
