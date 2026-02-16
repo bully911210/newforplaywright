@@ -9,14 +9,15 @@ build/
 # Persistent Chromium profiles (login sessions, cookies, lockfiles)
 user-data*/
 
-# Failure screenshots captured during automation
-screenshots/
+# Failure screenshots captured during automation (root-level only)
+/screenshots/
 
 # ── Logs ─────────────────────────────────────────────────────────────
 *.log
 
 # ── Debug artifacts ──────────────────────────────────────────────────
-*.png
+# Ignore root-level debug screenshots but keep docs/screenshots/ for README
+/*.png
 
 # ── OS / Editor ──────────────────────────────────────────────────────
 nul

@@ -25,6 +25,38 @@ Google Sheet  ──poll──▶  Node.js Poller  ──automate──▶  MMX 
 
 ---
 
+## Monitoring Dashboard
+
+The dashboard provides real-time visibility into the automation. Open **http://localhost:3000** in your browser.
+
+![Automation Dashboard](docs/screenshots/dashboard.png)
+
+**Features:**
+- **Live log stream** — real-time output from every automation step
+- **Run history table** — success/failure status, duration, and step for each processed row
+- **Polling controls** — start/stop polling with a single click
+- **Speed slider** — adjust concurrency from 1x to 5x concurrent browser workers
+- **Stats** — total runs, success count, failure count, SSE connection status
+- **Failure screenshots** — captured automatically and viewable from the error overlay
+
+---
+
+## MMX Form Automation
+
+The system automates the full MMX client onboarding workflow. Here is the **Bank Details** tab being filled automatically with account holder, account number, branch code (resolved from bank name), and collection day:
+
+![MMX Bank Details Form](docs/screenshots/mmx-bank-details.png)
+
+After the Client and Policy tabs are filed, the system navigates to the **Cover** tab to set up the donation amount:
+
+![MMX Cover Details](docs/screenshots/mmx-cover-details.png)
+
+The system handles validation modals automatically, including the **CRITICAL INPUT** modal that appears when tabs aren't loaded in the correct order:
+
+![MMX Critical Input Modal](docs/screenshots/mmx-form.png)
+
+---
+
 ## Project Structure
 
 ```
@@ -36,17 +68,17 @@ mmx-mcp-server/
 │   ├── types.ts                  # TypeScript interfaces
 │   │
 │   ├── automation/
-│   │   ├── browser-manager.ts    # Chromium launch, retry, profile recovery
+│   │   ├── browser-manager.ts    # Chromium launch, retry, zombie prevention
 │   │   ├── login.ts              # MMX login automation
 │   │   ├── client-search.ts      # Client Search → New Client
 │   │   ├── client-info.ts        # Client tab form filling
 │   │   ├── policy-info.ts        # Policy Info tab (dates, frequency, NPC)
-│   │   ├── bank-details.ts       # Bank Details tab (account, branch code)
+│   │   ├── bank-details.ts       # Bank Details tab (fuzzy bank→branch lookup)
 │   │   ├── file-tab.ts           # Click "File" on Client & Policy tabs
 │   │   ├── cover-tab.ts          # Cover tab (donation amount, effective date)
 │   │   ├── finalize.ts           # Final submission helper
 │   │   ├── process-row.ts        # Full E2E: one sheet row → MMX upload
-│   │   └── poll-sheet.ts         # Poll loop: check sheet, process new rows
+│   │   └── poll-sheet.ts         # Poll loop with 1-5x concurrency
 │   │
 │   ├── sheets/
 │   │   └── client.ts             # Google Sheet API (fetch, update, highlight)
@@ -56,10 +88,10 @@ mmx-mcp-server/
 │   │   ├── dashboard.html        # Single-page monitoring UI
 │   │   └── run-history.ts        # In-memory run tracking
 │   │
-│   ├── utils/
-│   │   ├── logger.ts             # Logger with EventEmitter for dashboard
-│   │   └── retry.ts              # Generic retry wrapper
-│   │
+│   └── utils/
+│       ├── logger.ts             # Logger with EventEmitter for dashboard SSE
+│       └── retry.ts              # Generic retry with exponential backoff
+│
 ├── code.gs                       # Google Apps Script (deploy to Sheets)
 ├── .env.example                  # Template for environment config
 ├── .gitignore
@@ -87,7 +119,7 @@ cd newforplaywright
 npm install
 ```
 
-Playwright will automatically download a Chromium browser on first install.
+Playwright will automatically download a Chromium browser via the `postinstall` script.
 
 ### Step 2: Google Apps Script Setup
 
@@ -116,6 +148,8 @@ MMX_PASSWORD="your_mmx_password"
 GOOGLE_SHEET_WEBAPP_URL=https://script.google.com/macros/s/YOUR_ID/exec
 ```
 
+See `.env.example` for all available options with documentation.
+
 ### Step 4: Build
 
 ```bash
@@ -130,6 +164,7 @@ npm start
 
 The system will:
 - Start the monitoring dashboard at **http://localhost:3000**
+- Kill any zombie Chrome processes from previous crashes
 - Begin polling the Google Sheet every 30 seconds
 - Automatically process any rows where column A = "New"
 
@@ -171,18 +206,25 @@ Your sheet must have this column layout (row 1 = headers, data starts at row 2):
 - **Only rows with status "New" are processed** (case-insensitive)
 - Set column A to `New` when a row is ready for upload
 - The system ignores empty, "Uploaded", and "FAILED" rows
+- On success, columns B-S are highlighted **green** in the sheet
+- On failure, column A is highlighted **red** with the error message
 
----
+### Bank Name Resolution
 
-## Monitoring Dashboard
+The system automatically resolves bank names to MMX branch codes using fuzzy matching:
 
-Open **http://localhost:3000** in your browser to see:
+| Bank Name | Branch Code | MMX Lookup |
+|-----------|-------------|------------|
+| ABSA | 632005 | ABSA BANK |
+| Capitec | 470010 | CAPITEC BANK |
+| FNB / First National | 250655 | FIRSTRAND BANK |
+| Nedbank | 198765 | NEDBANK |
+| Standard Bank | 051001 | STANDARD BANK |
+| TymeBank | 678910 | TYME BANK |
+| African Bank | 430000 | AFRICAN BANK |
+| Discovery Bank | 679000 | DISCOVERY BANK |
 
-- **Live log stream** — real-time output from the automation
-- **Run history** — success/failure status for each processed row
-- **Current status** — idle, polling, or processing
-- **Failure screenshots** — captured automatically when a step fails
-- **Polling controls** — start/stop polling from the dashboard
+If the bank name doesn't match exactly, Levenshtein fuzzy matching finds the closest match.
 
 ---
 
@@ -231,47 +273,6 @@ To use as MCP server: `npm run mcp` (communicates via stdio).
 
 ---
 
-## Troubleshooting
-
-### Browser won't launch (EBUSY / lockfile error)
-
-The Chromium profile directory has stale lock files from a crash. The system handles this automatically:
-1. Cleans lock files on startup
-2. Retries 3 times with 2-second delays
-3. If all retries fail, renames the corrupted profile and creates a fresh one
-
-If you still have issues, manually delete the `user-data-*` folder and restart.
-
-### Dates are wrong on MMX website
-
-Dates must come through as DD/MM/YYYY. The `code.gs` script uses `getDisplayValues()` to read the exact text from the sheet. If dates are wrong:
-1. Check your Google Sheet's locale is set to **South Africa** (File → Settings → Locale)
-2. Make sure you deployed the **latest** `code.gs` — create a **new deployment** (not update existing)
-3. Update the URL in `.env` with the new deployment URL
-
-### Rows not being picked up
-
-- Column A must contain exactly `New` (case-insensitive)
-- Empty cells, "Uploaded", or error messages are all skipped
-- Check the dashboard at localhost:3000 for live logs
-
-### Multiple browser windows open (duplicate processing)
-
-This means multiple Node.js processes are all polling simultaneously. Fix:
-1. Open Task Manager and kill **all** `node.exe` processes (except Figma extensions)
-2. Kill all `chrome.exe` processes
-3. Restart with `npm start` — only run ONE instance at a time
-4. Never set `AUTO_START_POLLING=true` in `.env`
-
-### Process hangs / browser stays open
-
-The browser is closed automatically after each row (success or failure). If it's stuck:
-1. Kill any `node` or `chrome` processes in Task Manager
-2. Delete the `user-data-*` folder
-3. Restart with `npm start`
-
----
-
 ## Scripts
 
 ```bash
@@ -296,3 +297,71 @@ This prevents a critical issue where multiple processes could simultaneously pro
 - Before each browser launch, `killChromeForDir()` kills any Chrome using the same profile directory
 - Graceful shutdown (`SIGINT`/`SIGTERM`) closes all browsers
 - `uncaughtException` handler ensures browsers are cleaned up on crashes
+
+### Automation Flow Per Row
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        processRow()                             │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. fetchClientRow()     ─── Read row data from Google Sheet    │
+│  2. loginToMMX()         ─── Login (reuses persistent session)  │
+│  3. fillClientSearch()   ─── Navigate to New Client form        │
+│  4. fillClientInfo()     ─── Fill name, ID, phone, address      │
+│  5. fileClientTab()      ─── Click "File" on Client tab         │
+│  6. fillPolicyInfo()     ─── Fill NPC, frequency, dates         │
+│  7. fillBankDetails()    ─── Fill account, branch code          │
+│  8. filePolicyTab()      ─── Click "File" on Policy tab         │
+│  9. fillCoverTab()       ─── Set donation amount + effective    │
+│ 10. updateCell("A","Uploaded") ─── Mark row as done             │
+│                                                                 │
+│  On failure at any step:                                        │
+│  • Screenshot captured → screenshots/fail-rowN-timestamp.png    │
+│  • Column A set to "FAILED at [step]: [error message]"         │
+│  • Browser closed, next row starts fresh                        │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Troubleshooting
+
+### Browser won't launch (EBUSY / lockfile error)
+
+The Chromium profile directory has stale lock files from a crash. The system handles this automatically:
+1. Kills zombie Chrome processes matching the profile directory
+2. Cleans lock files (`lockfile`, `SingletonLock`, `SingletonSocket`, `SingletonCookie`)
+3. Retries 3 times with 2-second delays
+4. If all retries fail, renames the corrupted profile and creates a fresh one (tries up to 10 fresh directories)
+
+If you still have issues, manually delete the `user-data-*` folder and restart.
+
+### Dates are wrong on MMX website
+
+Dates must come through as DD/MM/YYYY. The `code.gs` script uses `getDisplayValues()` to read the exact text from the sheet. If dates are wrong:
+1. Check your Google Sheet's locale is set to **South Africa** (File → Settings → Locale)
+2. Make sure you deployed the **latest** `code.gs` — create a **new deployment** (not update existing)
+3. Update the URL in `.env` with the new deployment URL
+
+### Rows not being picked up
+
+- Column A must contain exactly `New` (case-insensitive)
+- Empty cells, "Uploaded", or error messages are all skipped
+- Check the dashboard at localhost:3000 for live logs
+
+### Multiple browser windows open (duplicate processing)
+
+This means multiple Node.js processes are all polling simultaneously. Fix:
+1. Open Task Manager and kill **all** `node.exe` processes (except Figma extensions)
+2. Kill all `chrome.exe` processes
+3. Restart with `npm start` — only run **ONE** instance at a time
+4. Never set `AUTO_START_POLLING=true` in `.env`
+
+### Process hangs / browser stays open
+
+The browser is closed automatically after each row (success or failure). If it's stuck:
+1. Kill any `node` or `chrome` processes in Task Manager
+2. Delete the `user-data-*` folder
+3. Restart with `npm start`
