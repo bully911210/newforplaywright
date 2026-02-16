@@ -76,7 +76,6 @@ mmx-mcp-server/
 │   │   ├── bank-details.ts       # Bank Details tab (fuzzy bank→branch lookup)
 │   │   ├── file-tab.ts           # Click "File" on Client & Policy tabs
 │   │   ├── cover-tab.ts          # Cover tab (donation amount, effective date)
-│   │   ├── finalize.ts           # Final submission helper
 │   │   ├── process-row.ts        # Full E2E: one sheet row → MMX upload
 │   │   └── poll-sheet.ts         # Poll loop with 1-5x concurrency
 │   │

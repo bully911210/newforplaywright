@@ -73,15 +73,3 @@ function doGet(e) {
   return ContentService.createTextOutput(JSON.stringify({ error: "Unknown action" }))
     .setMimeType(ContentService.MimeType.JSON);
 }
-
-/**
- * Format a cell value for JSON output.
- * Dates are returned as DD/MM/YYYY strings to preserve the sheet's format.
- */
-function formatCellValue(val, tz) {
-  if (val === null || val === undefined || val === "") return "";
-  if (val instanceof Date) {
-    return Utilities.formatDate(val, tz, "dd/MM/yyyy");
-  }
-  return val.toString();
-}

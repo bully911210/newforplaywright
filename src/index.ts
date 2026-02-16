@@ -14,7 +14,7 @@ import { fillClientInfo } from "./automation/client-info.js";
 import { fillPolicyInfo } from "./automation/policy-info.js";
 import { fillBankDetails } from "./automation/bank-details.js";
 import { fillCoverTab } from "./automation/cover-tab.js";
-import { finalizeSubmission } from "./automation/finalize.js";
+import { filePolicyTab } from "./automation/file-tab.js";
 import { closeAllBrowsers } from "./automation/browser-manager.js";
 import { startPolling, stopPolling } from "./automation/poll-sheet.js";
 import { processRow } from "./automation/process-row.js";
@@ -279,7 +279,13 @@ server.tool(
   },
   async ({ confirmSubmit }) => {
     try {
-      const result = await finalizeSubmission(confirmSubmit);
+      if (!confirmSubmit) {
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify({ success: false, message: "Submission not confirmed. Set confirmSubmit to true to proceed." }, null, 2) }],
+          isError: true,
+        };
+      }
+      const result = await filePolicyTab();
 
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
