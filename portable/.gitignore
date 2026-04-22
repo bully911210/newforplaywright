@@ -1,0 +1,6 @@
+node_modules/
+dist/
+assets/
+.portable-data/
+*.log
+package-lock.json

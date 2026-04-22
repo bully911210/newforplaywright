@@ -1,0 +1,231 @@
+import { getPage } from "./browser-manager.js";
+import { getConfig } from "../config.js";
+import { log } from "../utils/logger.js";
+import type { ToolResult } from "../types.js";
+
+/**
+ * Fill the Cover tab: click Donation row → click Add → enter amount → File.
+ *
+ * Prerequisites: Client tab AND Policy tab must be Filed first,
+ * otherwise a "CRITICAL INPUT" modal blocks interaction.
+ *
+ * Cover tab structure (inside #ifrmCover):
+ *   - Table #tblList with "Donation" row (id="117", onclick=getRiskItems(...))
+ *   - Clicking row opens #dialogRiskItems dialog
+ *   - Dialog has #addItem button to add a new item
+ *   - After addItem, the iframe loads a form with fields:
+ *       #txt1  (Section) = "0.00" ← readonly formula field, must set via JS
+ *       #txt11 (Item) = "" ← editable, enter donation amount here
+ *       #txt13 (Status SELECT) = "A" (readonly/disabled)
+ *       #txt15 (Effective date) = auto-filled (readonly)
+ *       #txt20 (Rating method SELECT) = "M" (readonly/disabled)
+ *   - Donation amount must be entered in BOTH #txt11 (Item) AND #txt1 (Section)
+ *   - #btnSave to File the cover item
+ */
+export async function fillCoverTab(params: {
+  donationAmount: string;
+  effectiveDate?: string; // DD/MM/YYYY — debit order date
+}): Promise<ToolResult> {
+  const config = getConfig();
+  const page = await getPage();
+
+  log("info", `==== COVER TAB START ====`);
+  log("info", `RAW PARAMS: donationAmount="${params.donationAmount}", effectiveDate="${params.effectiveDate}"`);
+
+  try {
+    const contentFrame = page.frame({ name: "contentframe" });
+    if (!contentFrame) {
+      log("error", "COVER TAB: Content frame not found!");
+      return { success: false, message: "Content frame not found. Is the user logged in?" };
+    }
+
+    // Click Cover tab
+    log("info", "Clicking Cover tab");
+    const coverTabLink = contentFrame.locator('a[href="#tabsCover"]');
+    await coverTabLink.waitFor({ state: "visible", timeout: config.actionTimeout });
+    await coverTabLink.click();
+    await page.waitForTimeout(3000);
+
+    const coverIframe = contentFrame.frameLocator("#ifrmCover");
+
+    // Check for "CRITICAL INPUT" modal (means Client/Policy not filed)
+    const criticalModal = coverIframe.locator("#modalMessage.in, #modalMessage.modal.fade.in");
+    if (await criticalModal.isVisible().catch(() => false)) {
+      const modalText = (await coverIframe
+        .locator("#modalMessage .modal-body, #modalMessage #lblMessage, #modalMessage #modalHeader")
+        .textContent()
+        .catch(() => "")) ?? "";
+      if (modalText.toUpperCase().includes("CRITICAL INPUT")) {
+        return {
+          success: false,
+          message: `Cover tab blocked: "${modalText.trim()}". File Client and Policy tabs first.`,
+        };
+      }
+      // Dismiss non-critical modal
+      await coverIframe.locator('#modalMessage .btn').first().click({ force: true }).catch(() => {});
+      await page.waitForTimeout(1000);
+    }
+
+    // Click the Donation row (using force:true since td click is more reliable)
+    log("info", "Clicking Donation row in cover table");
+    const donationTd = coverIframe.locator('td:has-text("Donation")').first();
+    await donationTd.waitFor({ state: "visible", timeout: config.actionTimeout });
+    await donationTd.click({ force: true });
+    await page.waitForTimeout(3000);
+
+    // Check for modal message after click (dismiss if needed)
+    // If "CRITICAL INPUT" appears, it means the Policy tab wasn't loaded properly.
+    // We need to dismiss, re-click Policy tab, then retry the Cover tab flow.
+    const postClickModal = coverIframe.locator("#modalMessage.in, #modalMessage.modal.fade.in");
+    if (await postClickModal.isVisible().catch(() => false)) {
+      const postText = (await coverIframe
+        .locator("#modalMessage")
+        .textContent()
+        .catch(() => "")) ?? "";
+      log("info", `Modal after Donation click: "${postText.trim().substring(0, 100)}"`);
+
+      const isCritical = postText.toUpperCase().includes("CRITICAL") || postText.toUpperCase().includes("LOAD THE POLICY");
+      await coverIframe.locator('#modalMessage .btn').first().click({ force: true }).catch(() => {});
+      await page.waitForTimeout(1000);
+
+      if (isCritical) {
+        // Re-click Policy tab to "load" it, then come back to Cover and retry
+        log("warn", "CRITICAL INPUT modal detected — re-loading Policy tab then retrying Cover");
+        const policyTabLink = contentFrame.locator('a[href="#tabsPolicy"]');
+        await policyTabLink.click().catch(() => {});
+        await page.waitForTimeout(2000);
+
+        // Now re-click Cover tab
+        log("info", "Re-clicking Cover tab after Policy reload");
+        await coverTabLink.click();
+        await page.waitForTimeout(3000);
+
+        // Re-click Donation row
+        log("info", "Re-clicking Donation row after CRITICAL INPUT recovery");
+        const donationTd2 = coverIframe.locator('td:has-text("Donation")').first();
+        await donationTd2.waitFor({ state: "visible", timeout: config.actionTimeout });
+        await donationTd2.click({ force: true });
+        await page.waitForTimeout(3000);
+
+        // Check for another modal — if CRITICAL again, give up
+        const retryModal = coverIframe.locator("#modalMessage.in, #modalMessage.modal.fade.in");
+        if (await retryModal.isVisible().catch(() => false)) {
+          const retryText = (await coverIframe.locator("#modalMessage").textContent().catch(() => "")) ?? "";
+          log("error", `CRITICAL INPUT persists after Policy reload: "${retryText.trim().substring(0, 100)}"`);
+          await coverIframe.locator('#modalMessage .btn').first().click({ force: true }).catch(() => {});
+          return { success: false, message: `Cover tab blocked after retry: "${retryText.trim()}"` };
+        }
+      }
+    }
+
+    // Wait for the Donation dialog to appear
+    // The dialog may be #dialogRiskItems or a generic modal with "Add" button
+    log("info", "Waiting for Donation dialog to appear");
+    await page.waitForTimeout(2000);
+
+    // Try to find the Add button — it may be #addItem or a button labeled "Add"
+    let addClicked = false;
+
+    // Strategy 1: Look for #addItem button
+    const addItemBtn = coverIframe.locator("#addItem");
+    if (await addItemBtn.isVisible().catch(() => false)) {
+      log("info", "Found #addItem button, clicking it");
+      await addItemBtn.click();
+      addClicked = true;
+    }
+
+    // Strategy 2: Look for a button with text "Add" in the dialog area
+    if (!addClicked) {
+      const addTextBtn = coverIframe.locator('button:has-text("Add"), input[value="Add"], a:has-text("Add")').last();
+      if (await addTextBtn.isVisible().catch(() => false)) {
+        log("info", "Found 'Add' button by text, clicking it");
+        await addTextBtn.click();
+        addClicked = true;
+      }
+    }
+
+    if (!addClicked) {
+      return { success: false, message: "Could not find Add/addItem button in the Donation dialog." };
+    }
+
+    // Wait for the form to load inside the iframe after Add click
+    // The iframe navigates to Screen.aspx with the item form
+    log("info", "Waiting for cover item form to load after Add...");
+    await page.waitForTimeout(5000);
+
+    // After addItem, the iframe navigates to a form (Screen.aspx)
+    // Donation amount must go into BOTH #txt11 (Item, editable) and #txt1 (Section, readonly formula).
+
+    // 1. Fill #txt11 (Item) - this is the editable field
+    // Use a longer timeout since the iframe may still be loading
+    log("info", `Setting Item (#txt11) to donation amount: ${params.donationAmount}`);
+    const itemField = coverIframe.locator("#txt11");
+    await itemField.waitFor({ state: "visible", timeout: 30000 });
+    await itemField.click({ clickCount: 3 });
+    await itemField.fill(params.donationAmount);
+    await itemField.press("Tab");
+    await page.waitForTimeout(500);
+
+    // 2. Fill #txt1 (Section) - readonly formula field, must use JS to set value
+    log("info", `Setting Section (#txt1) to donation amount: ${params.donationAmount}`);
+    const sectionField = coverIframe.locator("#txt1");
+    await sectionField.evaluate((el, amount) => {
+      const input = el as HTMLInputElement;
+      input.removeAttribute("readonly");
+      input.value = amount;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      input.setAttribute("readonly", "true");
+    }, params.donationAmount);
+    await page.waitForTimeout(500);
+
+    // 3. Set Effective date (#txt15) to debit order date if provided
+    if (params.effectiveDate) {
+      log("info", `Setting Effective date (#txt15) to: ${params.effectiveDate}`);
+      const effectiveField = coverIframe.locator("#txt15");
+      await effectiveField.evaluate((el, dateVal) => {
+        const input = el as HTMLInputElement;
+        input.removeAttribute("readonly");
+        input.removeAttribute("disabled");
+        input.value = dateVal;
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }, params.effectiveDate);
+      await page.waitForTimeout(500);
+    }
+
+    // Click File button (#btnSave) inside the cover item form
+    log("info", "Clicking File button in Cover item form");
+    const fileBtn = coverIframe.locator("#btnSave");
+    await fileBtn.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(300);
+    await fileBtn.click();
+    await page.waitForTimeout(3000);
+
+    // Dismiss any post-File modal
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const postFileModal = coverIframe.locator("#modalMessage.in, #modalMessage.modal.fade.in");
+      if (await postFileModal.isVisible().catch(() => false)) {
+        const pfText = (await coverIframe
+          .locator("#modalMessage .modal-body, #modalMessage #lblMessage")
+          .textContent()
+          .catch(() => "")) ?? "";
+        log("info", `Post-File modal (attempt ${attempt + 1}): "${pfText.trim().substring(0, 100)}"`);
+        await coverIframe.locator('#modalMessage .btn').first().click({ force: true }).catch(() => {});
+        await page.waitForTimeout(1000);
+      } else {
+        break;
+      }
+    }
+
+    log("info", `==== COVER TAB COMPLETE ====`);
+    log("info", `Cover tab filled and filed. Donation amount: ${params.donationAmount}, effectiveDate: ${params.effectiveDate}`);
+    return {
+      success: true,
+      message: `Cover tab filled. Donation amount: ${params.donationAmount}`,
+    };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    log("error", `==== COVER TAB FAILED ====`);
+    log("error", `Cover tab error: ${msg}`);
+    return { success: false, message: `Cover tab error: ${msg}` };
+  }
+}
